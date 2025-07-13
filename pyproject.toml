@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "ai-testcase-generator"
+version = "0.1.0"
+description = "AI를 활용한 간단한 테스트케이스 생성기"
+authors = ["yjnoh <yjnoh@spectra.co.kr>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+click = "^8.2.1"
+
+[tool.poetry.scripts]
+testgen = "ai_testcase_generator.main:cli"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
