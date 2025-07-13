@@ -1,0 +1,20 @@
+{
+  "jira": {
+    "server_url": "https://enomix.atlassian.net",
+    "username": "yjnoh@spectra.co.kr",
+    "api_token": "ATATT3xFfGF0uilrrywoSel7z5oAGI6-Y-2hE-ipE-Zx5dp64BJ1uuxWRZUlmcpFTwNP3ivKPPyK4o3UzI5ooLFGZoTrywmSZhSgRCthNd2CB3xzc-wFTDEMQ7aZ4LBvgiKa2_Lq9gWUuKUspkEdQ_0KJH8WSxLvIarr-F1lCPPlnPvXc5k6xLk=8B9FDA01",
+    "project_key": "PROJ"
+  },
+  "openai": {
+    "api_key": "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",
+    "model": "gpt-3.5-turbo",
+    "max_tokens": 2000,
+    "temperature": 0.7
+  },
+  "app": {
+    "default_test_count": 5,
+    "auto_connect": true,
+    "auto_connect_ai": true,
+    "theme": "light"
+  }
+} 
