@@ -580,23 +580,7 @@ def main():
         if st.session_state.current_step == 1:
             st.markdown("## 📝 1단계: Jira 태스크 입력")
             
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                task_key = st.text_input(
-                    "Jira 태스크 키를 입력하세요:",
-                    placeholder="예: PROJ-123, DEV-456, BUG-789",
-                    value=st.session_state.get('task_key', '')
-                )
-            
-            with col2:
-                st.markdown("### 💡 입력 가이드")
-                st.markdown("""
-                - 형식: **PROJ-123**
-                - 대소문자 구분 없음
-                - 하이픈(-) 포함 필수
-                """)
-            
-            if st.button("📖 태스크 읽기", type="primary", disabled=not task_key.strip()):
+            def handle_task_input():
                 if task_key.strip():
                     with st.spinner("Jira 태스크를 조회 중..."):
                         jira_task = get_jira_task(st.session_state.jira_client, task_key.strip())
@@ -609,6 +593,28 @@ def main():
                             st.rerun()
                         else:
                             st.error("❌ 태스크를 찾을 수 없습니다. 태스크 키를 확인해주세요.")
+            
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                task_key = st.text_input(
+                    "Jira 태스크 키를 입력하세요:",
+                    placeholder="예: PROJ-123, DEV-456, BUG-789",
+                    value=st.session_state.get('task_key', ''),
+                    on_change=handle_task_input,
+                    key="task_key_input"
+                )
+            
+            with col2:
+                st.markdown("### 💡 입력 가이드")
+                st.markdown("""
+                - 형식: **PROJ-123**
+                - 대소문자 구분 없음
+                - 하이픈(-) 포함 필수
+                - **Enter 키로 자동 조회**
+                """)
+            
+            if st.button("📖 태스크 읽기", type="primary", disabled=not task_key.strip()):
+                handle_task_input()
         
         # Step 2: 태스크 정보 확인
         elif st.session_state.current_step == 2:
@@ -620,25 +626,27 @@ def main():
                 # 태스크 정보 표시
                 st.markdown(f"### 🎯 [{jira_task['key']}] {jira_task['summary']}")
                 
+                # 메타 정보를 작게 표시
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.metric("📊 상태", jira_task['status'])
+                    st.caption(f"📊 상태: **{jira_task['status']}**")
                 with col2:
-                    st.metric("⚡ 우선순위", jira_task['priority'])
+                    st.caption(f"⚡ 우선순위: **{jira_task['priority']}**")
                 with col3:
-                    st.metric("🏷️ 타입", jira_task['issue_type'])
+                    st.caption(f"🏷️ 타입: **{jira_task['issue_type']}**")
                 
                 st.markdown("---")
                 
-                # 설명 편집
-                st.markdown("### ✏️ 태스크 설명 편집 (선택사항)")
+                # 설명 편집 (크게 표시)
+                st.markdown("### 📄 태스크 설명")
                 st.info("💡 필요시 설명을 수정하면 AI가 수정된 내용을 바탕으로 테스트케이스를 생성합니다.")
                 
                 edited_description = st.text_area(
-                    "📄 설명:",
+                    "설명 편집:",
                     value=st.session_state.get('edited_description', jira_task['description']),
-                    height=150,
-                    key="description_editor"
+                    height=250,
+                    key="description_editor",
+                    help="이 설명이 AI 테스트케이스 생성에 사용됩니다"
                 )
                 
                 # 변경사항 저장
@@ -664,22 +672,16 @@ def main():
         elif st.session_state.current_step == 3:
             st.markdown("## ⚙️ 3단계: 테스트케이스 생성 설정")
             
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                test_count_ai = st.number_input(
-                    "생성할 테스트케이스 개수:",
-                    min_value=1,
-                    max_value=10,
-                    value=st.session_state.get('test_count_ai', 5),
-                    help="AI가 생성할 테스트케이스 개수"
-                )
-                st.session_state.test_count_ai = test_count_ai
+            test_count_ai = st.number_input(
+                "생성할 테스트케이스 개수:",
+                min_value=1,
+                max_value=10,
+                value=st.session_state.get('test_count_ai', 5),
+                help="AI가 생성할 테스트케이스 개수"
+            )
+            st.session_state.test_count_ai = test_count_ai
             
-            with col2:
-                st.markdown("### 📊 생성 미리보기")
-                st.metric("🧪 생성 예정", f"{test_count_ai}개")
-                st.metric("📝 구조", "3단계")
-                st.caption("전제조건 → 실행단계 → 기대결과")
+            st.markdown("---")
             
             # AI 연결 상태 확인
             if ai_connected:
@@ -788,55 +790,123 @@ def main():
                 st.session_state.current_step = 3
                 st.rerun()
         
-        # Step 5: 결과 확인
+        # Step 5: 결과 확인 및 편집
         elif st.session_state.current_step == 5:
-            st.markdown("## 📋 5단계: 생성된 테스트케이스 확인")
+            st.markdown("## 📋 5단계: 테스트케이스 편집 및 관리")
             
             if hasattr(st.session_state, 'generated_testcases'):
-                testcases = st.session_state.generated_testcases
+                # 편집 가능한 테스트케이스 복사본 생성 (한번만)
+                if 'editable_testcases' not in st.session_state:
+                    st.session_state.editable_testcases = st.session_state.generated_testcases.copy()
+                
+                testcases = st.session_state.editable_testcases
                 jira_task = st.session_state.current_jira_task
                 
-                st.success(f"✅ {len(testcases)}개의 구조화된 테스트케이스가 생성되었습니다!")
+                st.success(f"✅ {len(testcases)}개의 테스트케이스를 편집할 수 있습니다!")
                 
                 # 편집 정보 표시
                 if st.session_state.get('edited_description', jira_task['description']) != jira_task['description']:
                     st.info("ℹ️ 편집된 태스크 설명이 반영되었습니다.")
                 
-                # 테스트케이스 표시
-                for i, testcase in enumerate(testcases, 1):
-                    with st.expander(f"🧪 테스트케이스 {i}: {testcase.get('title', f'테스트케이스 {i}')}", expanded=(i == 1)):
+                # 새 테스트케이스 추가 버튼
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.markdown("### ✏️ 테스트케이스 편집")
+                with col2:
+                    if st.button("➕ 새 테스트케이스 추가", type="secondary"):
+                        new_testcase = {
+                            "title": f"[{jira_task['key']}] 새 테스트케이스",
+                            "precondition": "• 전제조건을 입력하세요",
+                            "steps": ["1. 첫 번째 단계를 입력하세요", "2. 두 번째 단계를 입력하세요"],
+                            "expectation": "• 기대결과를 입력하세요"
+                        }
+                        st.session_state.editable_testcases.append(new_testcase)
+                        st.rerun()
+                
+                # 편집 가능한 테스트케이스 표시
+                for i, testcase in enumerate(testcases):
+                    with st.expander(f"🧪 테스트케이스 {i+1}: {testcase.get('title', f'테스트케이스 {i+1}')}", expanded=(i == 0)):
                         
-                        # 제목
-                        st.markdown(f"**📌 제목:** {testcase.get('title', f'테스트케이스 {i}')}")
+                        # 삭제 버튼 (상단 우측)
+                        col1, col2 = st.columns([4, 1])
+                        with col2:
+                            if st.button("🗑️ 삭제", key=f"delete_tc_{i}", type="secondary", help="이 테스트케이스를 삭제합니다"):
+                                st.session_state.editable_testcases.pop(i)
+                                st.rerun()
                         
-                        # 전제조건
-                        st.markdown("**🔧 전제조건 (Precondition):**")
-                        st.markdown(testcase.get('precondition', '전제조건 없음'))
+                        # 제목 편집
+                        with col1:
+                            new_title = st.text_input(
+                                "📌 제목:",
+                                value=testcase.get('title', f'테스트케이스 {i+1}'),
+                                key=f"title_{i}"
+                            )
+                            testcase['title'] = new_title
                         
-                        # 실행단계
+                        # 전제조건 편집
+                        new_precondition = st.text_area(
+                            "🔧 전제조건 (Precondition):",
+                            value=testcase.get('precondition', '전제조건 없음'),
+                            height=100,
+                            key=f"precondition_{i}",
+                            help="테스트 실행 전 준비되어야 할 조건들을 입력하세요"
+                        )
+                        testcase['precondition'] = new_precondition
+                        
+                        # 실행단계 편집
                         st.markdown("**▶️ 실행단계 (Steps):**")
                         steps = testcase.get('steps', [])
                         if isinstance(steps, list):
-                            for step in steps:
-                                st.markdown(f"   {step}")
+                            steps_text = '\n'.join(steps)
                         else:
-                            st.markdown(steps)
+                            steps_text = str(steps)
                         
-                        # 기대결과
-                        st.markdown("**✅ 기대결과 (Expectation):**")
-                        st.markdown(testcase.get('expectation', '기대결과 없음'))
+                        new_steps_text = st.text_area(
+                            "실행단계 (한 줄에 하나씩):",
+                            value=steps_text,
+                            height=120,
+                            key=f"steps_{i}",
+                            help="각 단계를 한 줄씩 입력하세요. 번호는 자동으로 추가됩니다."
+                        )
+                        
+                        # 단계를 리스트로 변환
+                        if new_steps_text.strip():
+                            new_steps = [step.strip() for step in new_steps_text.split('\n') if step.strip()]
+                            # 번호 자동 추가 (이미 번호가 있으면 제거 후 재추가)
+                            formatted_steps = []
+                            for j, step in enumerate(new_steps, 1):
+                                # 기존 번호 제거
+                                step_clean = re.sub(r'^\d+\.\s*', '', step)
+                                formatted_steps.append(f"{j}. {step_clean}")
+                            testcase['steps'] = formatted_steps
+                        else:
+                            testcase['steps'] = []
+                        
+                        # 기대결과 편집
+                        new_expectation = st.text_area(
+                            "✅ 기대결과 (Expectation):",
+                            value=testcase.get('expectation', '기대결과 없음'),
+                            height=100,
+                            key=f"expectation_{i}",
+                            help="테스트 성공 시 예상되는 결과를 입력하세요"
+                        )
+                        testcase['expectation'] = new_expectation
                 
                 # 다운로드 기능
                 st.markdown("---")
+                st.markdown("### 💾 내보내기 및 관리")
                 
-                # 다운로드 파일 생성
+                # 편집된 테스트케이스 수 표시
+                st.info(f"📊 현재 **{len(testcases)}개**의 테스트케이스가 있습니다. 편집 내용이 자동으로 저장됩니다.")
+                
+                # 다운로드 파일 생성 (편집된 내용 사용)
                 edited_description = st.session_state.get('edited_description', jira_task['description'])
                 current_task_for_generation = jira_task.copy()
                 current_task_for_generation['description'] = edited_description
                 has_changes = edited_description != jira_task['description']
                 
                 testcase_text = f"Jira Task: {current_task_for_generation['key']} - {current_task_for_generation['summary']}\\n"
-                testcase_text += f"Generated by: AI-based Structured Test Cases\\n"
+                testcase_text += f"Generated & Edited: AI-based Structured Test Cases\\n"
                 if has_changes:
                     testcase_text += "✏️ Edited Description Used\\n"
                 testcase_text += f"Total Count: {len(testcases)}\\n"
@@ -860,21 +930,23 @@ def main():
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     if st.button("⬅️ 생성 설정으로", type="secondary"):
+                        # 편집된 테스트케이스 유지
                         st.session_state.current_step = 3
                         st.rerun()
                 
                 with col2:
                     st.download_button(
-                        label="💾 테스트케이스 다운로드",
+                        label="💾 편집된 테스트케이스 다운로드",
                         data=testcase_text,
-                        file_name=f"structured_testcases_{current_task_for_generation['key']}.txt",
-                        mime="text/plain"
+                        file_name=f"edited_testcases_{current_task_for_generation['key']}.txt",
+                        mime="text/plain",
+                        help="편집한 모든 내용이 포함된 파일을 다운로드합니다"
                     )
                 
                 with col3:
                     if st.button("🔄 새로 시작", type="primary"):
                         # 세션 초기화
-                        for key in ['current_step', 'current_jira_task', 'generated_testcases', 'edited_description', 'task_key', 'test_count_ai', 'generation_started']:
+                        for key in ['current_step', 'current_jira_task', 'generated_testcases', 'editable_testcases', 'edited_description', 'task_key', 'test_count_ai', 'generation_started']:
                             if key in st.session_state:
                                 del st.session_state[key]
                         st.session_state.current_step = 1
