@@ -1,11 +1,11 @@
 import streamlit as st
-import io
-import sys
 import json
 import os
+import time
 from typing import List, Dict, Optional
 from atlassian import Jira
 import re
+from openai import OpenAI
 
 
 def load_config() -> Optional[Dict]:
@@ -99,278 +99,192 @@ def extract_acceptance_criteria(description: str) -> str:
     return ''
 
 
-def generate_test_ideas_from_jira(jira_task: Dict) -> List[str]:
-    """Jira 태스크를 바탕으로 테스트케이스 아이디어를 생성합니다."""
-    task_summary = jira_task['summary']
-    task_description = jira_task['description']
-    issue_type = jira_task['issue_type']
+def setup_openai_client(api_key: str) -> OpenAI:
+    """OpenAI 클라이언트를 설정합니다."""
+    try:
+        client = OpenAI(api_key=api_key)
+        # 연결 테스트
+        client.models.list()
+        return client
+    except Exception as e:
+        st.error(f"OpenAI API 연결 실패: {str(e)}")
+        return None
+
+
+def generate_ai_testcases(client: OpenAI, jira_task: Dict, test_count: int = 5) -> List[Dict]:
+    """AI를 사용하여 구조화된 테스트케이스를 생성합니다."""
     
-    # 기본 테스트 아이디어
-    base_ideas = [
-        f"[{jira_task['key']}] {task_summary} - 정상 기능 동작 확인",
-        f"[{jira_task['key']}] {task_summary} - 잘못된 입력 데이터 처리",
-        f"[{jira_task['key']}] {task_summary} - 경계값 및 임계값 테스트",
-        f"[{jira_task['key']}] {task_summary} - 예외 상황 처리 확인",
-        f"[{jira_task['key']}] {task_summary} - 성능 및 응답시간 테스트",
-        f"[{jira_task['key']}] {task_summary} - 권한 및 보안 검증",
-        f"[{jira_task['key']}] {task_summary} - UI/UX 동작 확인",
-        f"[{jira_task['key']}] {task_summary} - 데이터 무결성 검증"
+    prompt = f"""
+다음 Jira 태스크를 기반으로 상세한 테스트케이스 {test_count}개를 생성해주세요.
+
+=== Jira 태스크 정보 ===
+태스크 키: {jira_task['key']}
+제목: {jira_task['summary']}
+상태: {jira_task['status']}
+우선순위: {jira_task['priority']}
+이슈 타입: {jira_task['issue_type']}
+설명: {jira_task['description']}
+
+=== 테스트케이스 형식 요구사항 ===
+각 테스트케이스는 다음 3가지 구성요소로 이루어져야 합니다:
+1. Precondition (전제조건): 테스트 실행 전 준비되어야 할 조건들
+2. Step (실행단계): 테스트를 위해 수행할 구체적인 단계들 (번호로 구분)
+3. Expectation Result (기대결과): 테스트 성공 시 예상되는 결과
+
+=== 응답 형식 ===
+JSON 형태로 응답해주세요:
+{{
+  "testcases": [
+    {{
+      "title": "테스트케이스 제목",
+      "precondition": "전제조건 설명",
+      "steps": [
+        "1. 첫 번째 실행 단계",
+        "2. 두 번째 실행 단계",
+        "3. 세 번째 실행 단계"
+      ],
+      "expectation": "기대되는 결과 설명"
+    }}
+  ]
+}}
+
+다양한 시나리오를 포함하여 {test_count}개의 테스트케이스를 생성해주세요:
+- 정상 케이스
+- 예외 상황
+- 경계값 테스트
+- 보안 및 권한 테스트
+- 성능 테스트 등
+"""
+    
+    try:
+        # config.json에서 OpenAI 설정 로드
+        config = load_config()
+        openai_config = config.get('openai', {}) if config else {}
+        
+        response = client.chat.completions.create(
+            model=openai_config.get('model', 'gpt-3.5-turbo'),
+            messages=[
+                {"role": "system", "content": "당신은 경험이 풍부한 QA 엔지니어입니다. 주어진 요구사항을 바탕으로 상세하고 실용적인 테스트케이스를 생성합니다."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=openai_config.get('max_tokens', 2000),
+            temperature=openai_config.get('temperature', 0.7)
+        )
+        
+        # JSON 응답 파싱
+        content = response.choices[0].message.content
+        
+        # JSON 추출 (마크다운 코드 블록이 있을 경우 제거)
+        import json
+        if "```json" in content:
+            json_start = content.find("```json") + 7
+            json_end = content.find("```", json_start)
+            json_content = content[json_start:json_end].strip()
+        elif "```" in content:
+            json_start = content.find("```") + 3
+            json_end = content.find("```", json_start)
+            json_content = content[json_start:json_end].strip()
+        else:
+            json_content = content.strip()
+        
+        result = json.loads(json_content)
+        return result.get('testcases', [])
+        
+    except Exception as e:
+        st.error(f"AI 테스트케이스 생성 실패: {str(e)}")
+        return []
+
+
+def fallback_generate_structured_testcases(jira_task: Dict, test_count: int = 5) -> List[Dict]:
+    """AI 연결 실패 시 사용할 기본 구조화된 테스트케이스 생성"""
+    
+    task_key = jira_task['key']
+    summary = jira_task['summary']
+    issue_type = jira_task['issue_type'].lower()
+    
+    testcases = []
+    
+    # 기본 테스트케이스 템플릿들
+    templates = [
+        {
+            "title": f"[{task_key}] {summary} - 정상 기능 동작 확인",
+            "precondition": "• 시스템이 정상적으로 구동된 상태\n• 필요한 권한을 가진 사용자로 로그인\n• 테스트 데이터가 준비된 상태",
+            "steps": [
+                "1. 메인 화면에 접속한다",
+                "2. 해당 기능 메뉴로 이동한다",
+                "3. 정상적인 입력값을 입력한다",
+                "4. 실행 버튼을 클릭한다"
+            ],
+            "expectation": "• 기능이 정상적으로 실행됨\n• 예상된 결과가 화면에 표시됨\n• 오류 메시지가 발생하지 않음"
+        },
+        {
+            "title": f"[{task_key}] {summary} - 잘못된 입력 데이터 처리",
+            "precondition": "• 시스템이 정상적으로 구동된 상태\n• 테스트용 잘못된 데이터가 준비된 상태",
+            "steps": [
+                "1. 해당 기능 화면에 접속한다",
+                "2. 잘못된 형식의 데이터를 입력한다",
+                "3. 실행 버튼을 클릭한다",
+                "4. 표시되는 오류 메시지를 확인한다"
+            ],
+            "expectation": "• 적절한 오류 메시지가 표시됨\n• 시스템이 비정상 종료되지 않음\n• 사용자가 이해할 수 있는 안내가 제공됨"
+        },
+        {
+            "title": f"[{task_key}] {summary} - 권한 및 보안 검증",
+            "precondition": "• 권한이 없는 사용자 계정으로 로그인\n• 보안 테스트 환경이 구성된 상태",
+            "steps": [
+                "1. 권한이 없는 계정으로 로그인한다",
+                "2. 해당 기능에 접근을 시도한다",
+                "3. 접근 제한 메시지를 확인한다",
+                "4. 우회 접근이 가능한지 확인한다"
+            ],
+            "expectation": "• 접근이 적절히 차단됨\n• 보안 로그가 기록됨\n• 우회 접근이 불가능함"
+        }
     ]
     
-    # 이슈 타입별 추가 테스트
-    if issue_type.lower() in ['bug', 'defect']:
-        base_ideas.extend([
-            f"[{jira_task['key']}] 버그 재현 테스트",
-            f"[{jira_task['key']}] 버그 수정 후 회귀 테스트"
-        ])
-    elif issue_type.lower() in ['story', 'feature']:
-        base_ideas.extend([
-            f"[{jira_task['key']}] 사용자 시나리오 테스트",
-            f"[{jira_task['key']}] 비즈니스 로직 검증"
-        ])
+    # 이슈 타입별 추가 테스트케이스
+    if issue_type in ['bug', 'defect']:
+        templates.append({
+            "title": f"[{task_key}] {summary} - 버그 재현 및 수정 확인",
+            "precondition": "• 버그가 발생했던 동일한 환경 구성\n• 재현 데이터 준비",
+            "steps": [
+                "1. 버그 발생 조건을 재현한다",
+                "2. 이전과 동일한 단계를 수행한다",
+                "3. 버그가 수정되었는지 확인한다",
+                "4. 관련 기능들의 정상 동작을 확인한다"
+            ],
+            "expectation": "• 이전 버그가 더 이상 발생하지 않음\n• 관련 기능들이 정상 동작함\n• 새로운 부작용이 발생하지 않음"
+        })
+    elif issue_type in ['story', 'feature']:
+        templates.append({
+            "title": f"[{task_key}] {summary} - 사용자 시나리오 테스트",
+            "precondition": "• 실제 사용자 환경과 유사한 설정\n• 다양한 사용자 프로필 준비",
+            "steps": [
+                "1. 실제 사용자 관점에서 기능에 접근한다",
+                "2. 일반적인 사용 패턴을 따라 기능을 사용한다",
+                "3. 다양한 시나리오로 기능을 테스트한다",
+                "4. 사용자 경험을 종합적으로 평가한다"
+            ],
+            "expectation": "• 사용자가 직관적으로 기능을 사용할 수 있음\n• 예상된 비즈니스 가치가 달성됨\n• 사용자 만족도가 향상됨"
+        })
     
-    # 인수 조건 기반 테스트
-    if jira_task['acceptance_criteria']:
-        base_ideas.append(f"[{jira_task['key']}] 인수 조건 충족 확인")
+    # 성능 테스트 추가
+    templates.append({
+        "title": f"[{task_key}] {summary} - 성능 및 응답시간 테스트",
+        "precondition": "• 성능 측정 도구가 설치된 상태\n• 대용량 테스트 데이터 준비\n• 네트워크 환경이 안정된 상태",
+        "steps": [
+            "1. 성능 모니터링을 시작한다",
+            "2. 기능을 여러 번 반복 실행한다",
+            "3. 응답시간을 측정한다",
+            "4. 시스템 리소스 사용량을 확인한다"
+        ],
+        "expectation": "• 응답시간이 요구사항 내에 있음\n• 시스템 리소스가 과도하게 사용되지 않음\n• 동시 사용자 환경에서도 안정적임"
+    })
     
-    return base_ideas
+    # 요청된 개수만큼 반환
+    return templates[:min(test_count, len(templates))]
 
 
-def generate_basic_test_ideas(jira_task: Dict) -> List[str]:
-    """기본 테스트케이스 아이디어만 생성합니다."""
-    task_summary = jira_task['summary']
-    
-    return [
-        f"[{jira_task['key']}] {task_summary} - 정상 기능 동작 확인",
-        f"[{jira_task['key']}] {task_summary} - 잘못된 입력 데이터 처리",
-        f"[{jira_task['key']}] {task_summary} - 경계값 및 임계값 테스트",
-        f"[{jira_task['key']}] {task_summary} - 예외 상황 처리 확인",
-        f"[{jira_task['key']}] {task_summary} - 성능 및 응답시간 테스트",
-        f"[{jira_task['key']}] {task_summary} - 권한 및 보안 검증",
-        f"[{jira_task['key']}] {task_summary} - UI/UX 동작 확인",
-        f"[{jira_task['key']}] {task_summary} - 데이터 무결성 검증"
-    ]
 
-
-def generate_issue_type_specific_ideas(jira_task: Dict) -> List[str]:
-    """이슈 타입별 특화 테스트케이스 아이디어를 생성합니다."""
-    issue_type = jira_task['issue_type']
-    ideas = []
-    
-    if issue_type.lower() in ['bug', 'defect']:
-        ideas.extend([
-            f"[{jira_task['key']}] 버그 재현 테스트",
-            f"[{jira_task['key']}] 버그 수정 후 회귀 테스트",
-            f"[{jira_task['key']}] 동일 유형 버그 검증",
-            f"[{jira_task['key']}] 수정 영향범위 확인"
-        ])
-    elif issue_type.lower() in ['story', 'feature']:
-        ideas.extend([
-            f"[{jira_task['key']}] 사용자 시나리오 테스트",
-            f"[{jira_task['key']}] 비즈니스 로직 검증",
-            f"[{jira_task['key']}] 사용자 경험(UX) 테스트",
-            f"[{jira_task['key']}] 기능 통합 테스트"
-        ])
-    elif issue_type.lower() in ['task', 'improvement']:
-        ideas.extend([
-            f"[{jira_task['key']}] 작업 완료 확인",
-            f"[{jira_task['key']}] 개선 효과 검증"
-        ])
-    else:
-        ideas.extend([
-            f"[{jira_task['key']}] 일반 기능 테스트",
-            f"[{jira_task['key']}] 요구사항 충족 확인"
-        ])
-    
-    # 인수 조건이 있으면 추가
-    if jira_task['acceptance_criteria']:
-        ideas.append(f"[{jira_task['key']}] 인수 조건 충족 확인")
-    
-    return ideas
-
-
-def generate_focus_area_tests(jira_task: Dict, focus_areas: List[str]) -> List[str]:
-    """집중 테스트 영역별 테스트케이스를 생성합니다."""
-    ideas = []
-    task_summary = jira_task['summary']
-    
-    for area in focus_areas:
-        if area == "보안":
-            ideas.extend([
-                f"[{jira_task['key']}] {task_summary} - 인증/인가 보안 테스트",
-                f"[{jira_task['key']}] {task_summary} - 데이터 암호화 검증"
-            ])
-        elif area == "성능":
-            ideas.extend([
-                f"[{jira_task['key']}] {task_summary} - 응답시간 성능 테스트",
-                f"[{jira_task['key']}] {task_summary} - 대용량 부하 테스트"
-            ])
-        elif area == "사용성":
-            ideas.extend([
-                f"[{jira_task['key']}] {task_summary} - 사용자 인터페이스 테스트",
-                f"[{jira_task['key']}] {task_summary} - 사용자 경험 시나리오"
-            ])
-        elif area == "호환성":
-            ideas.extend([
-                f"[{jira_task['key']}] {task_summary} - 브라우저 호환성 테스트",
-                f"[{jira_task['key']}] {task_summary} - 디바이스 호환성 검증"
-            ])
-        elif area == "접근성":
-            ideas.extend([
-                f"[{jira_task['key']}] {task_summary} - 웹 접근성 표준 준수",
-                f"[{jira_task['key']}] {task_summary} - 스크린 리더 호환성"
-            ])
-        elif area == "데이터 무결성":
-            ideas.extend([
-                f"[{jira_task['key']}] {task_summary} - 데이터 일관성 검증",
-                f"[{jira_task['key']}] {task_summary} - 트랜잭션 무결성 테스트"
-            ])
-        elif area == "오류 처리":
-            ideas.extend([
-                f"[{jira_task['key']}] {task_summary} - 예외 상황 처리 테스트",
-                f"[{jira_task['key']}] {task_summary} - 오류 메시지 검증"
-            ])
-        elif area == "통합":
-            ideas.extend([
-                f"[{jira_task['key']}] {task_summary} - API 통합 테스트",
-                f"[{jira_task['key']}] {task_summary} - 시스템 간 연동 검증"
-            ])
-    
-    return ideas
-
-
-def generate_context_based_tests(jira_task: Dict, context: str) -> List[str]:
-    """추가 컨텍스트를 기반으로 테스트케이스를 생성합니다."""
-    task_summary = jira_task['summary']
-    
-    # 컨텍스트에서 키워드 추출 및 테스트케이스 생성
-    context_lower = context.lower()
-    ideas = []
-    
-    if "모바일" in context_lower:
-        ideas.append(f"[{jira_task['key']}] {task_summary} - 모바일 환경 테스트")
-    
-    if "대용량" in context_lower or "많은" in context_lower:
-        ideas.append(f"[{jira_task['key']}] {task_summary} - 대용량 데이터 처리 테스트")
-    
-    if "브라우저" in context_lower:
-        ideas.append(f"[{jira_task['key']}] {task_summary} - 특정 브라우저 환경 테스트")
-    
-    if "동시" in context_lower or "병렬" in context_lower:
-        ideas.append(f"[{jira_task['key']}] {task_summary} - 동시성/병렬 처리 테스트")
-    
-    if "오프라인" in context_lower:
-        ideas.append(f"[{jira_task['key']}] {task_summary} - 오프라인 상황 테스트")
-    
-    if "네트워크" in context_lower:
-        ideas.append(f"[{jira_task['key']}] {task_summary} - 네트워크 환경 테스트")
-    
-    # 일반적인 컨텍스트 기반 테스트
-    if not ideas:  # 특별한 키워드가 없으면 일반적인 컨텍스트 테스트 추가
-        ideas.append(f"[{jira_task['key']}] {task_summary} - 특수 환경 테스트 ({context[:30]}...)")
-    
-    return ideas
-
-
-def prioritize_tests(tests: List[str], priority_type: str) -> List[str]:
-    """테스트케이스를 우선순위에 따라 정렬합니다."""
-    if priority_type == "high":
-        # 높은 우선순위: 정상 기능, 보안, 성능 먼저
-        high_priority = []
-        medium_priority = []
-        low_priority = []
-        
-        for test in tests:
-            test_lower = test.lower()
-            if any(keyword in test_lower for keyword in ["정상", "기본", "보안", "성능"]):
-                high_priority.append(test)
-            elif any(keyword in test_lower for keyword in ["예외", "오류", "경계"]):
-                medium_priority.append(test)
-            else:
-                low_priority.append(test)
-        
-        return high_priority + medium_priority + low_priority
-    
-    elif priority_type == "basic":
-        # 기본 기능 우선
-        basic_tests = [test for test in tests if "정상" in test or "기본" in test]
-        other_tests = [test for test in tests if test not in basic_tests]
-        return basic_tests + other_tests
-    
-    elif priority_type == "exception":
-        # 예외 상황 우선
-        exception_tests = [test for test in tests if any(keyword in test.lower() for keyword in ["예외", "오류", "버그", "경계"])]
-        other_tests = [test for test in tests if test not in exception_tests]
-        return exception_tests + other_tests
-    
-    else:  # 균등 분배
-        return tests
-
-
-def categorize_tests(tests: List[str]) -> Dict[str, List[str]]:
-    """테스트케이스를 카테고리별로 분류합니다."""
-    categories = {
-        "🎯 기본 기능": [],
-        "🔒 보안": [],
-        "⚡ 성능": [],
-        "🚨 예외 처리": [],
-        "💻 UI/UX": [],
-        "🔗 통합": [],
-        "🐛 버그 관련": [],
-        "📱 특수 환경": [],
-        "🛠️ 기타": []
-    }
-    
-    for test in tests:
-        test_lower = test.lower()
-        categorized = False
-        
-        # 기본 기능
-        if any(keyword in test_lower for keyword in ["정상", "기본", "동작 확인"]):
-            categories["🎯 기본 기능"].append(test)
-            categorized = True
-        
-        # 보안
-        elif any(keyword in test_lower for keyword in ["보안", "인증", "인가", "암호화"]):
-            categories["🔒 보안"].append(test)
-            categorized = True
-        
-        # 성능
-        elif any(keyword in test_lower for keyword in ["성능", "응답시간", "부하", "대용량"]):
-            categories["⚡ 성능"].append(test)
-            categorized = True
-        
-        # 예외 처리
-        elif any(keyword in test_lower for keyword in ["예외", "오류", "에러", "경계값", "잘못된"]):
-            categories["🚨 예외 처리"].append(test)
-            categorized = True
-        
-        # UI/UX
-        elif any(keyword in test_lower for keyword in ["ui", "ux", "사용자", "인터페이스", "접근성"]):
-            categories["💻 UI/UX"].append(test)
-            categorized = True
-        
-        # 통합
-        elif any(keyword in test_lower for keyword in ["통합", "api", "연동", "시스템"]):
-            categories["🔗 통합"].append(test)
-            categorized = True
-        
-        # 버그 관련
-        elif any(keyword in test_lower for keyword in ["버그", "재현", "회귀", "수정"]):
-            categories["🐛 버그 관련"].append(test)
-            categorized = True
-        
-        # 특수 환경
-        elif any(keyword in test_lower for keyword in ["모바일", "브라우저", "오프라인", "네트워크", "호환성"]):
-            categories["📱 특수 환경"].append(test)
-            categorized = True
-        
-        # 기타
-        if not categorized:
-            categories["🛠️ 기타"].append(test)
-    
-    # 빈 카테고리 제거
-    return {k: v for k, v in categories.items() if v}
 
 
 def generate_unittest_template(function_name: str, test_count: int, jira_task: Optional[Dict] = None) -> str:
@@ -556,13 +470,69 @@ def main():
                 if jira:
                     st.session_state.jira_connected = True
                     st.session_state.jira_client = jira
-                    st.success("🔄 자동 연결 성공!")
+                    st.success("🔄 Jira 자동 연결 성공!")
+        
+        # OpenAI API 설정
+        st.header("🤖 AI 설정")
+        
+        # 설정파일에서 OpenAI 설정 로드
+        openai_config = config.get('openai', {}) if config else {}
+        
+        # OpenAI 자동 연결 (설정파일에 키가 있고 auto_connect_ai가 True인 경우)
+        if (config and openai_config.get('api_key') and 
+            config.get('app', {}).get('auto_connect_ai', False) and 
+            'openai_connected' not in st.session_state):
+            
+            client = setup_openai_client(openai_config['api_key'])
+            if client:
+                st.session_state.openai_connected = True
+                st.session_state.openai_client = client
+                st.success("🔄 AI 자동 연결 성공!")
+            else:
+                st.session_state.openai_connected = False
+        
+        # OpenAI API 키 입력 (읽기 전용으로 표시)
+        if openai_config.get('api_key'):
+            masked_key = openai_config['api_key'][:10] + "..." + openai_config['api_key'][-10:]
+            st.text_input(
+                "OpenAI API 키 (config.json에서 로드됨):",
+                value=masked_key,
+                disabled=True,
+                help="config.json 파일에 설정된 API 키가 자동으로 로드됩니다"
+            )
+        else:
+            openai_api_key = st.text_input(
+                "OpenAI API 키:",
+                type="password",
+                placeholder="sk-...",
+                help="테스트케이스 생성을 위한 OpenAI API 키를 입력하세요"
+            )
+            
+            if st.button("🔌 AI 연결 테스트"):
+                if openai_api_key:
+                    client = setup_openai_client(openai_api_key)
+                    if client:
+                        st.success("✅ OpenAI API 연결 성공!")
+                        st.session_state.openai_connected = True
+                        st.session_state.openai_client = client
+                    else:
+                        st.session_state.openai_connected = False
+                else:
+                    st.warning("OpenAI API 키를 입력해주세요.")
+        
+        # AI 연결 상태 표시
+        if hasattr(st.session_state, 'openai_connected') and st.session_state.openai_connected:
+            st.success("🤖 AI: 연결됨")
+            if openai_config.get('model'):
+                st.caption(f"모델: {openai_config['model']}")
+        else:
+            st.info("🤖 AI: 미연결")
     
     # 도구 선택
     st.sidebar.header("🛠️ 도구 선택")
     tool_choice = st.sidebar.selectbox(
         "생성 도구를 선택하세요:",
-        ["Jira 태스크 기반 테스트케이스 아이디어 생성", "Jira 태스크 기반 유닛테스트 템플릿 생성"]
+        ["AI 기반 구조화된 테스트케이스 생성", "Jira 태스크 기반 유닛테스트 템플릿 생성"]
     )
     
     # 기본 테스트 개수 설정
@@ -571,256 +541,344 @@ def main():
         default_test_count = config['app'].get('default_test_count', 5)
     
     # 메인 컨텐츠
-    if tool_choice == "Jira 태스크 기반 테스트케이스 아이디어 생성":
-        st.header("💡 Jira 태스크 기반 테스트케이스 아이디어 생성")
+    if tool_choice == "AI 기반 구조화된 테스트케이스 생성":
+        st.header("🤖 AI 기반 구조화된 테스트케이스 생성")
         
-        # 입력 섹션
-        col1, col2 = st.columns([3, 1])
+        # 진행 단계 초기화
+        if 'current_step' not in st.session_state:
+            st.session_state.current_step = 1
         
-        with col1:
-            task_key = st.text_input(
-                "Jira 태스크 키를 입력하세요:",
-                placeholder="예: PROJ-123, DEV-456, BUG-789"
-            )
+        # 진행 바 표시
+        progress_steps = ["태스크 입력", "태스크 정보 확인", "생성 설정", "AI 생성 중", "결과 확인"]
         
-        with col2:
-            st.markdown("### 🎯 Jira 태스크 활용 팁")
-            st.markdown("""
-            - 태스크 키 형식: PROJ-123
-            - 태스크 요약과 설명을 분석
-            - 인수 조건(AC)을 자동 추출
-            - 이슈 타입별 맞춤 테스트 생성
-            - 우선순위를 고려한 테스트 계획
-            """)
+        # 진행률 계산
+        progress = (st.session_state.current_step - 1) / (len(progress_steps) - 1)
+        st.progress(progress)
         
-        # 1단계: 태스크 읽기
-        if st.button("📖 Jira 태스크 읽기", type="primary"):
-            if not hasattr(st.session_state, 'jira_connected') or not st.session_state.jira_connected:
-                st.error("❌ 먼저 Jira에 연결해주세요!")
-            elif task_key.strip():
-                with st.spinner("Jira 태스크를 조회 중..."):
-                    jira_task = get_jira_task(st.session_state.jira_client, task_key.strip())
-                    
-                    if jira_task:
-                        # 태스크 정보를 세션에 저장
-                        st.session_state.current_jira_task = jira_task
-                        st.success(f"✅ Jira 태스크 '{task_key}' 조회 성공!")
-                    else:
-                        if 'current_jira_task' in st.session_state:
-                            del st.session_state.current_jira_task
-            else:
-                st.warning("⚠️ Jira 태스크 키를 입력해주세요!")
+        # 현재 단계 표시
+        col1, col2, col3, col4, col5 = st.columns(5)
+        for i, step_name in enumerate(progress_steps, 1):
+            with [col1, col2, col3, col4, col5][i-1]:
+                if i == st.session_state.current_step:
+                    st.markdown(f"**🔵 {i}. {step_name}**")
+                elif i < st.session_state.current_step:
+                    st.markdown(f"✅ {i}. {step_name}")
+                else:
+                    st.markdown(f"⚪ {i}. {step_name}")
         
-        # 태스크 정보 표시 (읽기 성공 시)
-        if hasattr(st.session_state, 'current_jira_task') and st.session_state.current_jira_task:
-            jira_task = st.session_state.current_jira_task
-            
-            # 태스크 정보를 더 잘 보이게 개선
-            st.markdown("### 📋 읽어온 Jira 태스크")
-            
-            # 메인 정보 (크게 표시)
-            st.markdown(f"**🎯 [{jira_task['key']}] {jira_task['summary']}**")
-            
-            # 메타 정보 (작게 표시)
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.caption(f"📊 상태: **{jira_task['status']}**")
-            with col2:
-                st.caption(f"⚡ 우선순위: **{jira_task['priority']}**")
-            with col3:
-                st.caption(f"🏷️ 타입: **{jira_task['issue_type']}**")
-            
-            # 편집 가능한 설명
-            st.markdown("### ✏️ 태스크 설명 편집")
-            st.info("💡 아래 설명을 편집하면 테스트케이스 생성 시 편집된 내용이 반영됩니다.")
-            
-            # 편집 가능한 설명
-            edited_description = st.text_area(
-                "📄 설명 (편집 가능)",
-                value=st.session_state.get('edited_description', jira_task['description']),
-                height=200,
-                help="이 설명은 테스트케이스 생성에 사용됩니다. 필요시 수정하세요.",
-                key="description_editor"
-            )
-            
-            # 편집된 정보를 반영한 태스크 객체 생성
-            current_task_for_generation = jira_task.copy()
-            current_task_for_generation['description'] = edited_description
-            
-            # 변경사항 확인
-            has_changes = edited_description != jira_task['description']
-            
-            # 2단계: 테스트케이스 생성 설정
-            st.markdown("---")
-            st.markdown("### 🧪 테스트케이스 생성 설정")
+        st.markdown("---")
+        
+        # 연결 상태 체크 (자동)
+        jira_connected = hasattr(st.session_state, 'jira_connected') and st.session_state.jira_connected
+        ai_connected = hasattr(st.session_state, 'openai_connected') and st.session_state.openai_connected
+        
+        if not jira_connected:
+            st.error("❌ Jira 연결이 필요합니다. 왼쪽 사이드바에서 Jira 연결을 완료해주세요.")
+            return
+        
+        # Step 1: 태스크 입력
+        if st.session_state.current_step == 1:
+            st.markdown("## 📝 1단계: Jira 태스크 입력")
             
             col1, col2 = st.columns([2, 1])
-            
             with col1:
-                # 기본 생성 옵션
-                generate_type = st.selectbox(
-                    "기본 생성 유형:",
-                    ["기본 8개 + 이슈타입별", "기본 8개만", "이슈타입별만", "인수조건 포함 전체"]
-                )
-                
-                # 사용자 추가 설정
-                st.markdown("#### 🎨 추가 설정")
-                
-                additional_context = st.text_area(
-                    "추가 컨텍스트 (선택사항):",
-                    placeholder="특별히 고려해야 할 시나리오나 요구사항을 입력하세요...\n예: 모바일 환경, 대용량 데이터, 특정 브라우저 등",
-                    height=80
-                )
-                
-                focus_areas = st.multiselect(
-                    "집중 테스트 영역 선택:",
-                    ["보안", "성능", "사용성", "호환성", "접근성", "데이터 무결성", "오류 처리", "통합"],
-                    default=[]
-                )
-                
-                test_priority = st.selectbox(
-                    "테스트 우선순위 기준:",
-                    ["높음 우선", "균등 분배", "기본 기능 우선", "예외 상황 우선"]
+                task_key = st.text_input(
+                    "Jira 태스크 키를 입력하세요:",
+                    placeholder="예: PROJ-123, DEV-456, BUG-789",
+                    value=st.session_state.get('task_key', '')
                 )
             
             with col2:
-                st.markdown("#### 📊 생성 예상")
-                base_count = 8
-                if generate_type == "기본 8개 + 이슈타입별":
-                    expected_count = base_count + (2 if current_task_for_generation['issue_type'].lower() in ['bug', 'defect', 'story', 'feature'] else 0)
-                    if current_task_for_generation['acceptance_criteria']:
-                        expected_count += 1
-                elif generate_type == "기본 8개만":
-                    expected_count = base_count
-                elif generate_type == "이슈타입별만":
-                    expected_count = 2 if current_task_for_generation['issue_type'].lower() in ['bug', 'defect', 'story', 'feature'] else 0
-                else:  # 전체
-                    expected_count = base_count + (2 if current_task_for_generation['issue_type'].lower() in ['bug', 'defect', 'story', 'feature'] else 0)
-                    if current_task_for_generation['acceptance_criteria']:
-                        expected_count += 1
-                
-                # 추가 설정에 따른 예상 개수 증가
-                additional_count = len(focus_areas) + (1 if additional_context.strip() else 0)
-                total_expected = expected_count + additional_count
-                
-                st.metric("기본 테스트케이스", expected_count)
-                if additional_count > 0:
-                    st.metric("추가 테스트케이스", additional_count)
-                st.metric("🎯 총 예상 개수", total_expected)
-                
-                # 편집 상태 표시
-                if has_changes:
-                    st.info("ℹ️ 편집된 설명이 반영됩니다")
+                st.markdown("### 💡 입력 가이드")
+                st.markdown("""
+                - 형식: **PROJ-123**
+                - 대소문자 구분 없음
+                - 하이픈(-) 포함 필수
+                """)
             
-            # 테스트케이스 생성 버튼
-            if st.button("🚀 테스트케이스 생성", type="secondary", use_container_width=True):
-                with st.spinner("편집된 정보를 바탕으로 맞춤형 테스트케이스를 생성 중..."):
-                    # 기본 테스트케이스 생성 (편집된 정보 사용)
-                    if generate_type == "기본 8개만":
-                        ideas = generate_basic_test_ideas(current_task_for_generation)
-                    elif generate_type == "이슈타입별만":
-                        ideas = generate_issue_type_specific_ideas(current_task_for_generation)
-                    else:
-                        ideas = generate_test_ideas_from_jira(current_task_for_generation)
-                    
-                    # 추가 설정 기반 테스트케이스 생성
-                    if focus_areas:
-                        additional_ideas = generate_focus_area_tests(current_task_for_generation, focus_areas)
-                        ideas.extend(additional_ideas)
-                    
-                    if additional_context.strip():
-                        context_ideas = generate_context_based_tests(current_task_for_generation, additional_context.strip())
-                        ideas.extend(context_ideas)
-                    
-                    # 우선순위에 따른 정렬
-                    if test_priority == "높음 우선":
-                        ideas = prioritize_tests(ideas, "high")
-                    elif test_priority == "기본 기능 우선":
-                        ideas = prioritize_tests(ideas, "basic")
-                    elif test_priority == "예외 상황 우선":
-                        ideas = prioritize_tests(ideas, "exception")
-                    
-                    st.success(f"✅ {len(ideas)}개의 맞춤형 테스트케이스가 생성되었습니다!")
-                    
-                    # 편집 정보 표시
-                    if has_changes:
-                        st.info("ℹ️ 편집된 태스크 설명이 반영되었습니다.")
-                    
-                    # 결과 출력 (카테고리별로 분류)
-                    st.markdown("### 📝 생성된 테스트케이스")
-                    
-                    # 카테고리별 분류
-                    categorized_tests = categorize_tests(ideas)
-                    
-                    for category, tests in categorized_tests.items():
-                        if tests:
-                            with st.expander(f"🏷️ {category} ({len(tests)}개)", expanded=True):
-                                for i, test in enumerate(tests, 1):
-                                    st.markdown(f"**{i}.** {test}")
-                    
-                    # 사용자 추가/편집 기능
-                    st.markdown("---")
-                    st.markdown("### ✏️ 테스트케이스 추가/편집")
-                    
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        custom_test = st.text_input(
-                            "추가 테스트케이스:",
-                            placeholder=f"[{current_task_for_generation['key']}] 사용자 정의 테스트케이스..."
-                        )
-                    with col2:
-                        if st.button("➕ 추가") and custom_test.strip():
-                            if 'custom_tests' not in st.session_state:
-                                st.session_state.custom_tests = []
-                            st.session_state.custom_tests.append(custom_test.strip())
-                            st.success("추가됨!")
+            if st.button("📖 태스크 읽기", type="primary", disabled=not task_key.strip()):
+                if task_key.strip():
+                    with st.spinner("Jira 태스크를 조회 중..."):
+                        jira_task = get_jira_task(st.session_state.jira_client, task_key.strip())
+                        
+                        if jira_task:
+                            st.session_state.current_jira_task = jira_task
+                            st.session_state.task_key = task_key.strip()
+                            st.session_state.current_step = 2
+                            st.success(f"✅ 태스크 '{task_key}' 조회 성공!")
                             st.rerun()
+                        else:
+                            st.error("❌ 태스크를 찾을 수 없습니다. 태스크 키를 확인해주세요.")
+        
+        # Step 2: 태스크 정보 확인
+        elif st.session_state.current_step == 2:
+            st.markdown("## 📋 2단계: 태스크 정보 확인 및 편집")
+            
+            if hasattr(st.session_state, 'current_jira_task'):
+                jira_task = st.session_state.current_jira_task
+                
+                # 태스크 정보 표시
+                st.markdown(f"### 🎯 [{jira_task['key']}] {jira_task['summary']}")
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("📊 상태", jira_task['status'])
+                with col2:
+                    st.metric("⚡ 우선순위", jira_task['priority'])
+                with col3:
+                    st.metric("🏷️ 타입", jira_task['issue_type'])
+                
+                st.markdown("---")
+                
+                # 설명 편집
+                st.markdown("### ✏️ 태스크 설명 편집 (선택사항)")
+                st.info("💡 필요시 설명을 수정하면 AI가 수정된 내용을 바탕으로 테스트케이스를 생성합니다.")
+                
+                edited_description = st.text_area(
+                    "📄 설명:",
+                    value=st.session_state.get('edited_description', jira_task['description']),
+                    height=150,
+                    key="description_editor"
+                )
+                
+                # 변경사항 저장
+                st.session_state.edited_description = edited_description
+                has_changes = edited_description != jira_task['description']
+                
+                if has_changes:
+                    st.success("✏️ 설명이 수정되었습니다. 이 내용이 테스트케이스 생성에 반영됩니다.")
+                
+                # 버튼
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("⬅️ 이전 단계", type="secondary"):
+                        st.session_state.current_step = 1
+                        st.rerun()
+                
+                with col2:
+                    if st.button("➡️ 다음 단계: 생성 설정", type="primary"):
+                        st.session_state.current_step = 3
+                        st.rerun()
+        
+        # Step 3: 생성 설정
+        elif st.session_state.current_step == 3:
+            st.markdown("## ⚙️ 3단계: 테스트케이스 생성 설정")
+            
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                test_count_ai = st.number_input(
+                    "생성할 테스트케이스 개수:",
+                    min_value=1,
+                    max_value=10,
+                    value=st.session_state.get('test_count_ai', 5),
+                    help="AI가 생성할 테스트케이스 개수"
+                )
+                st.session_state.test_count_ai = test_count_ai
+            
+            with col2:
+                st.markdown("### 📊 생성 미리보기")
+                st.metric("🧪 생성 예정", f"{test_count_ai}개")
+                st.metric("📝 구조", "3단계")
+                st.caption("전제조건 → 실행단계 → 기대결과")
+            
+            # AI 연결 상태 확인
+            if ai_connected:
+                st.success("🤖 AI로 고품질 테스트케이스를 생성합니다")
+            else:
+                st.warning("⚠️ AI 미연결: 기본 템플릿으로 생성됩니다")
+            
+            # 버튼
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("⬅️ 이전 단계", type="secondary"):
+                    st.session_state.current_step = 2
+                    st.rerun()
+            
+            with col2:
+                if st.button("🚀 테스트케이스 생성", type="primary"):
+                    st.session_state.current_step = 4
+                    st.rerun()
+        
+        # Step 4: AI 생성 중
+        elif st.session_state.current_step == 4:
+            st.markdown("## 🤖 4단계: AI 테스트케이스 생성 중")
+            
+            # 생성 상태 표시
+            jira_task = st.session_state.current_jira_task
+            test_count_ai = st.session_state.get('test_count_ai', 5)
+            
+            # 생성 정보 표시
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("🎯 대상 태스크", jira_task['key'])
+            with col2:
+                st.metric("🧪 생성 개수", f"{test_count_ai}개")
+            with col3:
+                if ai_connected:
+                    st.metric("🤖 생성 방식", "AI 기반")
+                else:
+                    st.metric("📝 생성 방식", "기본 템플릿")
+            
+            st.markdown("---")
+            
+            # 진행 상황 표시
+            if ai_connected:
+                st.markdown("### 🧠 AI가 분석하고 있습니다...")
+                st.info("🔍 태스크 정보 분석 → 테스트 시나리오 설계 → 구조화된 테스트케이스 생성")
+            else:
+                st.markdown("### 📝 기본 템플릿으로 생성 중...")
+                st.info("📋 이슈 타입 분석 → 기본 시나리오 적용 → 테스트케이스 구조화")
+            
+            # 자동 생성 실행 (한번만)
+            if 'generation_started' not in st.session_state:
+                st.session_state.generation_started = True
+                
+                edited_description = st.session_state.get('edited_description', jira_task['description'])
+                current_task_for_generation = jira_task.copy()
+                current_task_for_generation['description'] = edited_description
+                
+                # 진행 바와 함께 생성
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                try:
+                    if ai_connected:
+                        status_text.text("🤖 AI 모델에 요청 전송 중...")
+                        progress_bar.progress(20)
+                        
+                        testcases = generate_ai_testcases(
+                            st.session_state.openai_client,
+                            current_task_for_generation,
+                            test_count_ai
+                        )
+                        
+                        progress_bar.progress(80)
+                        status_text.text("🔄 응답 처리 중...")
+                        
+                        if not testcases:
+                            status_text.text("⚠️ AI 생성 실패, 기본 템플릿 사용...")
+                            testcases = fallback_generate_structured_testcases(current_task_for_generation, test_count_ai)
+                    else:
+                        status_text.text("📝 기본 템플릿 적용 중...")
+                        progress_bar.progress(50)
+                        testcases = fallback_generate_structured_testcases(current_task_for_generation, test_count_ai)
                     
-                    # 사용자 추가 테스트케이스 표시
-                    if hasattr(st.session_state, 'custom_tests') and st.session_state.custom_tests:
-                        st.markdown("#### 👤 사용자 추가 테스트케이스")
-                        for i, custom in enumerate(st.session_state.custom_tests):
-                            col1, col2 = st.columns([4, 1])
-                            with col1:
-                                st.markdown(f"**{len(ideas) + i + 1}.** {custom}")
-                            with col2:
-                                if st.button("🗑️", key=f"delete_{i}"):
-                                    st.session_state.custom_tests.pop(i)
-                                    st.rerun()
+                    progress_bar.progress(100)
+                    status_text.text("✅ 생성 완료!")
                     
-                    # 전체 다운로드 기능
-                    all_ideas = ideas.copy()
-                    if hasattr(st.session_state, 'custom_tests'):
-                        all_ideas.extend(st.session_state.custom_tests)
-                    
-                    ideas_text = f"Jira Task: {current_task_for_generation['key']} - {current_task_for_generation['summary']}\\n"
-                    ideas_text += f"Generated Type: {generate_type}\\n"
-                    ideas_text += f"Focus Areas: {', '.join(focus_areas) if focus_areas else 'None'}\\n"
-                    ideas_text += f"Priority: {test_priority}\\n"
-                    if has_changes:
-                        ideas_text += "✏️ Edited Description Used\\n"
-                    if additional_context.strip():
-                        ideas_text += f"Additional Context: {additional_context.strip()}\\n"
-                    ideas_text += f"Total Count: {len(all_ideas)}\\n\\n"
-                    
-                    # 카테고리별로 출력
-                    for category, tests in categorized_tests.items():
-                        if tests:
-                            ideas_text += f"\\n=== {category} ===\\n"
-                            for i, test in enumerate(tests, 1):
-                                ideas_text += f"{i}. {test}\\n"
-                    
-                    if hasattr(st.session_state, 'custom_tests') and st.session_state.custom_tests:
-                        ideas_text += f"\\n=== 사용자 추가 테스트케이스 ===\\n"
-                        for i, custom in enumerate(st.session_state.custom_tests, 1):
-                            ideas_text += f"{i}. {custom}\\n"
-                    
+                    if testcases:
+                        st.session_state.generated_testcases = testcases
+                        # 자동으로 다음 단계로
+                        time.sleep(1)  # 완료 메시지 잠시 표시
+                        st.session_state.current_step = 5
+                        del st.session_state.generation_started  # 초기화
+                        st.rerun()
+                    else:
+                        st.error("❌ 테스트케이스 생성에 실패했습니다.")
+                        
+                except Exception as e:
+                    st.error(f"❌ 생성 중 오류 발생: {str(e)}")
+                    status_text.text("❌ 생성 실패")
+                    progress_bar.progress(0)
+            
+            # 수동 취소 버튼 (필요시)
+            if st.button("❌ 생성 취소", type="secondary"):
+                if 'generation_started' in st.session_state:
+                    del st.session_state.generation_started
+                st.session_state.current_step = 3
+                st.rerun()
+        
+        # Step 5: 결과 확인
+        elif st.session_state.current_step == 5:
+            st.markdown("## 📋 5단계: 생성된 테스트케이스 확인")
+            
+            if hasattr(st.session_state, 'generated_testcases'):
+                testcases = st.session_state.generated_testcases
+                jira_task = st.session_state.current_jira_task
+                
+                st.success(f"✅ {len(testcases)}개의 구조화된 테스트케이스가 생성되었습니다!")
+                
+                # 편집 정보 표시
+                if st.session_state.get('edited_description', jira_task['description']) != jira_task['description']:
+                    st.info("ℹ️ 편집된 태스크 설명이 반영되었습니다.")
+                
+                # 테스트케이스 표시
+                for i, testcase in enumerate(testcases, 1):
+                    with st.expander(f"🧪 테스트케이스 {i}: {testcase.get('title', f'테스트케이스 {i}')}", expanded=(i == 1)):
+                        
+                        # 제목
+                        st.markdown(f"**📌 제목:** {testcase.get('title', f'테스트케이스 {i}')}")
+                        
+                        # 전제조건
+                        st.markdown("**🔧 전제조건 (Precondition):**")
+                        st.markdown(testcase.get('precondition', '전제조건 없음'))
+                        
+                        # 실행단계
+                        st.markdown("**▶️ 실행단계 (Steps):**")
+                        steps = testcase.get('steps', [])
+                        if isinstance(steps, list):
+                            for step in steps:
+                                st.markdown(f"   {step}")
+                        else:
+                            st.markdown(steps)
+                        
+                        # 기대결과
+                        st.markdown("**✅ 기대결과 (Expectation):**")
+                        st.markdown(testcase.get('expectation', '기대결과 없음'))
+                
+                # 다운로드 기능
+                st.markdown("---")
+                
+                # 다운로드 파일 생성
+                edited_description = st.session_state.get('edited_description', jira_task['description'])
+                current_task_for_generation = jira_task.copy()
+                current_task_for_generation['description'] = edited_description
+                has_changes = edited_description != jira_task['description']
+                
+                testcase_text = f"Jira Task: {current_task_for_generation['key']} - {current_task_for_generation['summary']}\\n"
+                testcase_text += f"Generated by: AI-based Structured Test Cases\\n"
+                if has_changes:
+                    testcase_text += "✏️ Edited Description Used\\n"
+                testcase_text += f"Total Count: {len(testcases)}\\n"
+                testcase_text += "=" * 80 + "\\n\\n"
+                
+                for i, testcase in enumerate(testcases, 1):
+                    testcase_text += f"테스트케이스 {i}: {testcase.get('title', f'테스트케이스 {i}')}\\n"
+                    testcase_text += "-" * 60 + "\\n"
+                    testcase_text += f"전제조건 (Precondition):\\n{testcase.get('precondition', '전제조건 없음')}\\n\\n"
+                    testcase_text += f"실행단계 (Steps):\\n"
+                    steps = testcase.get('steps', [])
+                    if isinstance(steps, list):
+                        for step in steps:
+                            testcase_text += f"{step}\\n"
+                    else:
+                        testcase_text += f"{steps}\\n"
+                    testcase_text += f"\\n기대결과 (Expectation):\\n{testcase.get('expectation', '기대결과 없음')}\\n"
+                    testcase_text += "\\n" + "=" * 80 + "\\n\\n"
+                
+                # 버튼
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    if st.button("⬅️ 생성 설정으로", type="secondary"):
+                        st.session_state.current_step = 3
+                        st.rerun()
+                
+                with col2:
                     st.download_button(
-                        label="💾 전체 테스트케이스 다운로드",
-                        data=ideas_text,
-                        file_name=f"testcase_comprehensive_{current_task_for_generation['key']}.txt",
+                        label="💾 테스트케이스 다운로드",
+                        data=testcase_text,
+                        file_name=f"structured_testcases_{current_task_for_generation['key']}.txt",
                         mime="text/plain"
                     )
+                
+                with col3:
+                    if st.button("🔄 새로 시작", type="primary"):
+                        # 세션 초기화
+                        for key in ['current_step', 'current_jira_task', 'generated_testcases', 'edited_description', 'task_key', 'test_count_ai', 'generation_started']:
+                            if key in st.session_state:
+                                del st.session_state[key]
+                        st.session_state.current_step = 1
+                        st.rerun()
     
     elif tool_choice == "Jira 태스크 기반 유닛테스트 템플릿 생성":
         st.header("🧪 Jira 태스크 기반 유닛테스트 템플릿 생성")
