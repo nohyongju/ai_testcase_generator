@@ -2,6 +2,8 @@ import streamlit as st
 import json
 import os
 import time
+import requests
+import base64
 from typing import List, Dict, Optional
 from atlassian import Jira
 import re
@@ -99,6 +101,291 @@ def extract_acceptance_criteria(description: str) -> str:
     return ''
 
 
+def setup_testrail_client(url: str, username: str, password: str) -> Optional[Dict]:
+    """TestRail 클라이언트를 설정합니다."""
+    try:
+        # 기본 인증 헤더 생성 (username:password)
+        auth_string = f"{username}:{password}"
+        auth_bytes = auth_string.encode('ascii')
+        auth_b64 = base64.b64encode(auth_bytes).decode('ascii')
+        
+        headers = {
+            'Authorization': f'Basic {auth_b64}',
+            'Content-Type': 'application/json'
+        }
+        
+        # 연결 테스트 (사용자 정보 조회)
+        response = requests.get(f"{url}/index.php?/api/v2/get_user_by_email&email={username}", headers=headers)
+        
+        if response.status_code == 200:
+            return {
+                'url': url,
+                'headers': headers
+            }
+        else:
+            st.error(f"TestRail 연결 실패: {response.status_code} - {response.text if response.text else '인증 정보를 확인해주세요'}")
+            return None
+            
+    except Exception as e:
+        st.error(f"TestRail 연결 실패: {str(e)}")
+        return None
+
+
+def get_testrail_projects(client: Dict) -> List[Dict]:
+    """TestRail 프로젝트 목록을 가져옵니다."""
+    try:
+        response = requests.get(f"{client['url']}/index.php?/api/v2/get_projects", headers=client['headers'])
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # 디버깅 정보 (필요시에만 표시)
+            if st.session_state.get('show_testrail_debug', False):
+                st.write("🔍 TestRail 프로젝트 API 응답:", data)
+            
+            # 다양한 응답 형태 처리
+            if isinstance(data, list):
+                # 리스트 형태의 응답
+                projects = []
+                for item in data:
+                    if isinstance(item, dict):
+                        # 정상적인 딕셔너리 형태
+                        projects.append({
+                            'id': item.get('id', 0),
+                            'name': item.get('name', 'Unknown Project'),
+                            'is_completed': item.get('is_completed', False)
+                        })
+                    else:
+                        st.warning(f"⚠️ 예상치 못한 프로젝트 데이터 형태: {type(item)} - {item}")
+                return projects
+            elif isinstance(data, dict):
+                # 딕셔너리 형태의 응답 (예: {'projects': [...]} 또는 단일 프로젝트)
+                if 'projects' in data:
+                    return get_testrail_projects_from_list(data['projects'])
+                else:
+                    # 단일 프로젝트인 경우
+                    return [{
+                        'id': data.get('id', 0),
+                        'name': data.get('name', 'Unknown Project'),
+                        'is_completed': data.get('is_completed', False)
+                    }]
+            else:
+                st.error(f"❌ 예상치 못한 API 응답 형태: {type(data)}")
+                return []
+                
+        else:
+            st.error(f"프로젝트 목록 조회 실패: {response.status_code} - {response.text}")
+            return []
+            
+    except Exception as e:
+        st.error(f"프로젝트 목록 조회 실패: {str(e)}")
+        return []
+
+
+def get_testrail_projects_from_list(projects_data: List) -> List[Dict]:
+    """프로젝트 리스트 데이터를 정규화합니다."""
+    projects = []
+    for item in projects_data:
+        if isinstance(item, dict):
+            projects.append({
+                'id': item.get('id', 0),
+                'name': item.get('name', 'Unknown Project'),
+                'is_completed': item.get('is_completed', False)
+            })
+        else:
+            st.warning(f"⚠️ 예상치 못한 프로젝트 데이터: {item}")
+    return projects
+
+
+def get_testrail_suites(client: Dict, project_id: int) -> List[Dict]:
+    """TestRail 스위트 목록을 가져옵니다."""
+    try:
+        response = requests.get(f"{client['url']}/index.php?/api/v2/get_suites/{project_id}", headers=client['headers'])
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # 디버깅 정보 (필요시에만 표시)
+            if st.session_state.get('show_testrail_debug', False):
+                st.write("🔍 TestRail 스위트 API 응답:", data)
+            
+            # 다양한 응답 형태 처리
+            if isinstance(data, list):
+                # 리스트 형태의 응답
+                suites = []
+                for item in data:
+                    if isinstance(item, dict):
+                        suites.append({
+                            'id': item.get('id', 0),
+                            'name': item.get('name', 'Unknown Suite'),
+                            'description': item.get('description', ''),
+                            'project_id': item.get('project_id', project_id),
+                            'is_master': item.get('is_master', False),
+                            'is_baseline': item.get('is_baseline', False),
+                            'is_completed': item.get('is_completed', False)
+                        })
+                    else:
+                        st.warning(f"⚠️ 예상치 못한 스위트 데이터 형태: {type(item)} - {item}")
+                return suites
+            elif isinstance(data, dict):
+                # 딕셔너리 형태의 응답
+                if 'suites' in data:
+                    return get_testrail_suites_from_list(data['suites'])
+                else:
+                    # 단일 스위트인 경우
+                    return [{
+                        'id': data.get('id', 0),
+                        'name': data.get('name', 'Unknown Suite'),
+                        'description': data.get('description', ''),
+                        'project_id': data.get('project_id', project_id),
+                        'is_master': data.get('is_master', False),
+                        'is_baseline': data.get('is_baseline', False),
+                        'is_completed': data.get('is_completed', False)
+                    }]
+            else:
+                st.error(f"❌ 예상치 못한 스위트 API 응답 형태: {type(data)}")
+                return []
+                
+        else:
+            st.error(f"스위트 목록 조회 실패: {response.status_code} - {response.text}")
+            return []
+            
+    except Exception as e:
+        st.error(f"스위트 목록 조회 실패: {str(e)}")
+        return []
+
+
+def get_testrail_suites_from_list(suites_data: List) -> List[Dict]:
+    """스위트 리스트 데이터를 정규화합니다."""
+    suites = []
+    for item in suites_data:
+        if isinstance(item, dict):
+            suites.append({
+                'id': item.get('id', 0),
+                'name': item.get('name', 'Unknown Suite'),
+                'description': item.get('description', ''),
+                'project_id': item.get('project_id', 0),
+                'is_master': item.get('is_master', False),
+                'is_baseline': item.get('is_baseline', False),
+                'is_completed': item.get('is_completed', False)
+            })
+        else:
+            st.warning(f"⚠️ 예상치 못한 스위트 데이터: {item}")
+    return suites
+
+
+def get_testrail_sections(client: Dict, project_id: int, suite_id: int = None) -> List[Dict]:
+    """TestRail 섹션 목록을 가져옵니다."""
+    try:
+        # suite_id가 있으면 해당 스위트의 섹션만 가져오기
+        if suite_id:
+            url = f"{client['url']}/index.php?/api/v2/get_sections/{project_id}&suite_id={suite_id}"
+        else:
+            url = f"{client['url']}/index.php?/api/v2/get_sections/{project_id}"
+            
+        response = requests.get(url, headers=client['headers'])
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # 디버깅 정보 (필요시에만 표시)
+            if st.session_state.get('show_testrail_debug', False):
+                st.write("🔍 TestRail 섹션 API 응답:", data)
+            
+            # 다양한 응답 형태 처리
+            if isinstance(data, list):
+                # 리스트 형태의 응답
+                sections = []
+                for item in data:
+                    if isinstance(item, dict):
+                        sections.append({
+                            'id': item.get('id', 0),
+                            'name': item.get('name', 'Unknown Section'),
+                            'suite_id': item.get('suite_id', 0),
+                            'parent_id': item.get('parent_id', None)
+                        })
+                    else:
+                        st.warning(f"⚠️ 예상치 못한 섹션 데이터 형태: {type(item)} - {item}")
+                return sections
+            elif isinstance(data, dict):
+                # 딕셔너리 형태의 응답
+                if 'sections' in data:
+                    return get_testrail_sections_from_list(data['sections'])
+                else:
+                    # 단일 섹션인 경우
+                    return [{
+                        'id': data.get('id', 0),
+                        'name': data.get('name', 'Unknown Section'),
+                        'suite_id': data.get('suite_id', 0),
+                        'parent_id': data.get('parent_id', None)
+                    }]
+            else:
+                st.error(f"❌ 예상치 못한 섹션 API 응답 형태: {type(data)}")
+                return []
+                
+        else:
+            st.error(f"섹션 목록 조회 실패: {response.status_code} - {response.text}")
+            return []
+            
+    except Exception as e:
+        st.error(f"섹션 목록 조회 실패: {str(e)}")
+        return []
+
+
+def get_testrail_sections_from_list(sections_data: List) -> List[Dict]:
+    """섹션 리스트 데이터를 정규화합니다."""
+    sections = []
+    for item in sections_data:
+        if isinstance(item, dict):
+            sections.append({
+                'id': item.get('id', 0),
+                'name': item.get('name', 'Unknown Section'),
+                'suite_id': item.get('suite_id', 0),
+                'parent_id': item.get('parent_id', None)
+            })
+        else:
+            st.warning(f"⚠️ 예상치 못한 섹션 데이터: {item}")
+    return sections
+
+
+def create_testrail_testcase(client: Dict, section_id: int, testcase: Dict) -> bool:
+    """TestRail에 테스트케이스를 생성합니다."""
+    try:
+        # 실행단계를 문자열로 변환
+        steps = testcase.get('steps', [])
+        if isinstance(steps, list):
+            steps_text = '\n'.join(steps)
+        else:
+            steps_text = str(steps)
+        
+        # TestRail 테스트케이스 데이터
+        data = {
+            'title': testcase.get('title', '제목 없음'),
+            'custom_preconds': testcase.get('precondition', ''),
+            'custom_steps': steps_text,
+            'custom_expected': testcase.get('expectation', ''),
+            'custom_quality_model': 1,
+            'type_id': 1,  # Test Case (Other)
+            'priority_id': 3,  # Medium
+        }
+        
+        response = requests.post(
+            f"{client['url']}/index.php?/api/v2/add_case/{section_id}",
+            headers=client['headers'],
+            json=data
+        )
+        
+        if response.status_code == 200:
+            return True
+        else:
+            st.error(f"테스트케이스 생성 실패: {response.status_code} - {response.text}")
+            return False
+            
+    except Exception as e:
+        st.error(f"테스트케이스 생성 실패: {str(e)}")
+        return False
+
+
 def setup_openai_client(api_key: str) -> OpenAI:
     """OpenAI 클라이언트를 설정합니다."""
     try:
@@ -157,9 +444,13 @@ JSON 형태로 응답해주세요:
 """
     
     try:
-        # config.json에서 OpenAI 설정 로드
+        # config.json 및 오버라이드 설정 로드
         config = load_config()
         openai_config = config.get('openai', {}) if config else {}
+        
+        # 세션의 오버라이드 설정이 있으면 우선 사용
+        if hasattr(st.session_state, 'override_openai_config'):
+            openai_config.update(st.session_state.override_openai_config)
         
         response = client.chat.completions.create(
             model=openai_config.get('model', 'gpt-3.5-turbo'),
@@ -491,15 +782,139 @@ def main():
             else:
                 st.session_state.openai_connected = False
         
-        # OpenAI API 키 입력 (읽기 전용으로 표시)
+        # OpenAI API 키 입력
         if openai_config.get('api_key'):
-            masked_key = openai_config['api_key'][:10] + "..." + openai_config['api_key'][-10:]
-            st.text_input(
-                "OpenAI API 키 (config.json에서 로드됨):",
-                value=masked_key,
-                disabled=True,
-                help="config.json 파일에 설정된 API 키가 자동으로 로드됩니다"
-            )
+            # 설정 수정 모드 토글
+            if 'edit_ai_settings' not in st.session_state:
+                st.session_state.edit_ai_settings = False
+            
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.caption("💡 config.json에서 설정이 로드되었습니다")
+            with col2:
+                if st.button("⚙️ 설정 수정" if not st.session_state.edit_ai_settings else "💾 수정 완료", key="toggle_ai_edit"):
+                    st.session_state.edit_ai_settings = not st.session_state.edit_ai_settings
+                    st.rerun()
+            
+            if st.session_state.edit_ai_settings:
+                # 편집 모드
+                new_api_key = st.text_input(
+                    "OpenAI API 키:",
+                    value="",
+                    type="password",
+                    placeholder="새 API 키를 입력하세요",
+                    help="새로운 API 키를 입력하면 현재 세션에서만 사용됩니다"
+                )
+                
+                # 모델 선택
+                available_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo-preview"]
+                current_model = openai_config.get('model', 'gpt-3.5-turbo')
+                try:
+                    model_index = available_models.index(current_model)
+                except ValueError:
+                    model_index = 0
+                
+                new_model = st.selectbox(
+                    "모델:",
+                    options=available_models,
+                    index=model_index
+                )
+                
+                new_max_tokens = st.number_input(
+                    "최대 토큰 수:",
+                    value=openai_config.get('max_tokens', 2000),
+                    min_value=100,
+                    max_value=4000,
+                    step=100
+                )
+                
+                new_temperature = st.slider(
+                    "온도:",
+                    value=openai_config.get('temperature', 0.7),
+                    min_value=0.0,
+                    max_value=1.0,
+                    step=0.1
+                )
+                
+                # 설정 적용
+                if new_api_key.strip():
+                    st.session_state.override_openai_config = {
+                        'api_key': new_api_key.strip(),
+                        'model': new_model,
+                        'max_tokens': new_max_tokens,
+                        'temperature': new_temperature
+                    }
+                    # 즉시 AI 재연결
+                    client = setup_openai_client(new_api_key.strip())
+                    if client:
+                        st.session_state.openai_connected = True
+                        st.session_state.openai_client = client
+                        st.success("✅ AI 설정이 업데이트되었습니다!")
+                    else:
+                        st.session_state.openai_connected = False
+                        st.error("❌ API 키가 유효하지 않습니다.")
+                else:
+                    # API 키 없이도 다른 설정들은 업데이트
+                    if 'override_openai_config' in st.session_state:
+                        st.session_state.override_openai_config.update({
+                            'model': new_model,
+                            'max_tokens': new_max_tokens,
+                            'temperature': new_temperature
+                        })
+                    else:
+                        st.session_state.override_openai_config = {
+                            'api_key': openai_config['api_key'],  # 기존 키 유지
+                            'model': new_model,
+                            'max_tokens': new_max_tokens,
+                            'temperature': new_temperature
+                        }
+                
+            else:
+                # 읽기 전용 모드
+                masked_key = openai_config['api_key'][:10] + "..." + openai_config['api_key'][-10:]
+                st.text_input(
+                    "OpenAI API 키:",
+                    value=masked_key,
+                    disabled=True,
+                    help="config.json 파일에서 로드된 API 키"
+                )
+                
+                # 오버라이드된 설정이 있으면 표시
+                display_config = st.session_state.get('override_openai_config', openai_config)
+                
+                st.text_input(
+                    "모델:",
+                    value=display_config.get('model', 'gpt-3.5-turbo'),
+                    disabled=True
+                )
+                st.number_input(
+                    "최대 토큰 수:",
+                    value=display_config.get('max_tokens', 2000),
+                    disabled=True
+                )
+                st.slider(
+                    "온도:",
+                    value=display_config.get('temperature', 0.7),
+                    min_value=0.0,
+                    max_value=1.0,
+                    step=0.1,
+                    disabled=True
+                )
+                
+                # 연결 테스트 버튼 추가
+                if st.button("🔌 AI 연결 테스트", key="test_current_ai"):
+                    api_key = display_config.get('api_key', openai_config.get('api_key'))
+                    if api_key:
+                        client = setup_openai_client(api_key)
+                        if client:
+                            st.session_state.openai_connected = True
+                            st.session_state.openai_client = client
+                            st.success("✅ AI 연결 성공!")
+                        else:
+                            st.session_state.openai_connected = False
+                            st.error("❌ AI 연결 실패!")
+                    else:
+                        st.error("❌ API 키가 없습니다.")
         else:
             openai_api_key = st.text_input(
                 "OpenAI API 키:",
@@ -523,10 +938,187 @@ def main():
         # AI 연결 상태 표시
         if hasattr(st.session_state, 'openai_connected') and st.session_state.openai_connected:
             st.success("🤖 AI: 연결됨")
-            if openai_config.get('model'):
-                st.caption(f"모델: {openai_config['model']}")
+            # 오버라이드된 설정이 있으면 그것을 표시
+            display_config = st.session_state.get('override_openai_config', openai_config)
+            if display_config.get('model'):
+                st.caption(f"모델: {display_config['model']}")
         else:
             st.info("🤖 AI: 미연결")
+        
+        # TestRail API 설정
+        st.header("🧪 TestRail 설정")
+        
+        # 설정파일에서 TestRail 설정 로드
+        testrail_config = config.get('testrail', {}) if config else {}
+        
+        # TestRail 자동 연결 (설정파일에 정보가 있고 auto_connect_testrail이 True인 경우)
+        if (config and testrail_config.get('url') and testrail_config.get('username') and testrail_config.get('password') and
+            config.get('app', {}).get('auto_connect_testrail', False) and 
+            'testrail_connected' not in st.session_state):
+            
+            client = setup_testrail_client(
+                testrail_config['url'],
+                testrail_config['username'],
+                testrail_config['password']
+            )
+            if client:
+                st.session_state.testrail_connected = True
+                st.session_state.testrail_client = client
+                st.success("🔄 TestRail 자동 연결 성공!")
+            else:
+                st.session_state.testrail_connected = False
+        
+        # TestRail 설정 입력
+        if testrail_config.get('url') and testrail_config.get('username') and testrail_config.get('password'):
+            # 설정 수정 모드 토글
+            if 'edit_testrail_settings' not in st.session_state:
+                st.session_state.edit_testrail_settings = False
+            
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.caption("💡 config.json에서 설정이 로드되었습니다")
+            with col2:
+                if st.button("⚙️ 설정 수정" if not st.session_state.edit_testrail_settings else "💾 수정 완료", key="toggle_testrail_edit"):
+                    st.session_state.edit_testrail_settings = not st.session_state.edit_testrail_settings
+                    st.rerun()
+            
+            if st.session_state.edit_testrail_settings:
+                # 편집 모드
+                new_url = st.text_input(
+                    "TestRail URL:",
+                    value=testrail_config['url'],
+                    placeholder="https://your-domain.testrail.io",
+                    help="TestRail 인스턴스 URL"
+                )
+                
+                new_username = st.text_input(
+                    "TestRail 사용자명:",
+                    value=testrail_config['username'],
+                    placeholder="your_email@example.com",
+                    help="TestRail 로그인 이메일"
+                )
+                
+                new_password = st.text_input(
+                    "TestRail 패스워드:",
+                    value="",
+                    type="password",
+                    placeholder="새 패스워드를 입력하세요",
+                    help="새로운 패스워드를 입력하면 현재 세션에서만 사용됩니다"
+                )
+                
+                # 연결 테스트 버튼
+                if st.button("🔌 TestRail 연결 테스트", key="test_new_testrail"):
+                    if new_url and new_username and new_password:
+                        client = setup_testrail_client(new_url, new_username, new_password)
+                        if client:
+                            st.session_state.testrail_connected = True
+                            st.session_state.testrail_client = client
+                            st.session_state.override_testrail_config = {
+                                'url': new_url,
+                                'username': new_username,
+                                'password': new_password
+                            }
+                            st.success("✅ TestRail 설정이 업데이트되었습니다!")
+                        else:
+                            st.session_state.testrail_connected = False
+                    else:
+                        st.warning("모든 필드를 입력해주세요.")
+                
+                # 패스워드 없이도 URL/사용자명은 업데이트
+                if not new_password.strip():
+                    if 'override_testrail_config' in st.session_state:
+                        st.session_state.override_testrail_config.update({
+                            'url': new_url,
+                            'username': new_username
+                        })
+                    else:
+                        st.session_state.override_testrail_config = {
+                            'url': new_url,
+                            'username': new_username,
+                            'password': testrail_config['password']  # 기존 패스워드 유지
+                        }
+            
+            else:
+                # 읽기 전용 모드
+                display_config = st.session_state.get('override_testrail_config', testrail_config)
+                
+                st.text_input(
+                    "TestRail URL:",
+                    value=display_config['url'],
+                    disabled=True
+                )
+                st.text_input(
+                    "TestRail 사용자명:",
+                    value=display_config['username'],
+                    disabled=True
+                )
+                masked_password = "********"
+                st.text_input(
+                    "TestRail 패스워드:",
+                    value=masked_password,
+                    type="password",
+                    disabled=True
+                )
+                
+                # 연결 테스트 버튼 추가
+                if st.button("🔌 TestRail 연결 테스트", key="test_current_testrail"):
+                    config_to_use = display_config if 'override_testrail_config' in st.session_state else testrail_config
+                    url = config_to_use.get('url')
+                    username = config_to_use.get('username')
+                    password = config_to_use.get('password')
+                    
+                    if url and username and password:
+                        client = setup_testrail_client(url, username, password)
+                        if client:
+                            st.session_state.testrail_connected = True
+                            st.session_state.testrail_client = client
+                            st.success("✅ TestRail 연결 성공!")
+                        else:
+                            st.session_state.testrail_connected = False
+                            st.error("❌ TestRail 연결 실패!")
+                    else:
+                        st.error("❌ TestRail 설정이 불완전합니다.")
+        else:
+            testrail_url = st.text_input(
+                "TestRail URL:",
+                placeholder="https://your-domain.testrail.io",
+                help="TestRail 인스턴스 URL을 입력하세요"
+            )
+            testrail_username = st.text_input(
+                "TestRail 사용자명:",
+                placeholder="your_email@example.com",
+                help="TestRail 로그인 이메일을 입력하세요"
+            )
+            testrail_password = st.text_input(
+                "TestRail 패스워드:",
+                type="password",
+                placeholder="your_password",
+                help="TestRail 로그인 패스워드를 입력하세요"
+            )
+            
+            if st.button("🔌 TestRail 연결 테스트"):
+                if testrail_url and testrail_username and testrail_password:
+                    client = setup_testrail_client(testrail_url, testrail_username, testrail_password)
+                    if client:
+                        st.success("✅ TestRail 연결 성공!")
+                        st.session_state.testrail_connected = True
+                        st.session_state.testrail_client = client
+                    else:
+                        st.session_state.testrail_connected = False
+                else:
+                    st.warning("모든 필드를 입력해주세요.")
+        
+        # TestRail 연결 상태 표시
+        if hasattr(st.session_state, 'testrail_connected') and st.session_state.testrail_connected:
+            st.success("🧪 TestRail: 연결됨")
+        else:
+            st.info("🧪 TestRail: 미연결")
+        
+        # 디버깅 토글
+        if st.checkbox("🔍 TestRail API 디버깅 정보 표시", key="testrail_debug_toggle"):
+            st.session_state.show_testrail_debug = True
+        else:
+            st.session_state.show_testrail_debug = False
     
     # 도구 선택
     st.sidebar.header("🛠️ 도구 선택")
@@ -549,16 +1141,16 @@ def main():
             st.session_state.current_step = 1
         
         # 진행 바 표시
-        progress_steps = ["태스크 입력", "태스크 정보 확인", "생성 설정", "AI 생성 중", "결과 확인"]
+        progress_steps = ["태스크 입력", "태스크 정보 확인", "생성 설정", "AI 생성 중", "시나리오 확인", "TestRail 등록"]
         
         # 진행률 계산
         progress = (st.session_state.current_step - 1) / (len(progress_steps) - 1)
         st.progress(progress)
         
         # 현재 단계 표시
-        col1, col2, col3, col4, col5 = st.columns(5)
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
         for i, step_name in enumerate(progress_steps, 1):
-            with [col1, col2, col3, col4, col5][i-1]:
+            with [col1, col2, col3, col4, col5, col6][i-1]:
                 if i == st.session_state.current_step:
                     st.markdown(f"**🔵 {i}. {step_name}**")
                 elif i < st.session_state.current_step:
@@ -790,9 +1382,9 @@ def main():
                 st.session_state.current_step = 3
                 st.rerun()
         
-        # Step 5: 결과 확인 및 편집
+        # Step 5: 시나리오 확인
         elif st.session_state.current_step == 5:
-            st.markdown("## 📋 5단계: 테스트케이스 편집 및 관리")
+            st.markdown("## 📋 5단계: 시나리오 확인 및 편집")
             
             if hasattr(st.session_state, 'generated_testcases'):
                 # 편집 가능한 테스트케이스 복사본 생성 (한번만)
@@ -927,7 +1519,7 @@ def main():
                     testcase_text += "\\n" + "=" * 80 + "\\n\\n"
                 
                 # 버튼
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     if st.button("⬅️ 생성 설정으로", type="secondary"):
                         # 편집된 테스트케이스 유지
@@ -944,13 +1536,273 @@ def main():
                     )
                 
                 with col3:
-                    if st.button("🔄 새로 시작", type="primary"):
+                    if st.button("➡️ TestRail 등록", type="primary", disabled=len(testcases) == 0):
+                        st.session_state.current_step = 6
+                        st.rerun()
+                
+                with col4:
+                    if st.button("🔄 새로 시작", type="secondary"):
                         # 세션 초기화
                         for key in ['current_step', 'current_jira_task', 'generated_testcases', 'editable_testcases', 'edited_description', 'task_key', 'test_count_ai', 'generation_started']:
                             if key in st.session_state:
                                 del st.session_state[key]
                         st.session_state.current_step = 1
                         st.rerun()
+        
+        # Step 6: TestRail 등록
+        elif st.session_state.current_step == 6:
+            st.markdown("## 🧪 6단계: TestRail 등록")
+            
+            if hasattr(st.session_state, 'editable_testcases'):
+                testcases = st.session_state.editable_testcases
+                jira_task = st.session_state.current_jira_task
+                
+                # TestRail 연결 확인
+                testrail_connected = hasattr(st.session_state, 'testrail_connected') and st.session_state.testrail_connected
+                
+                if not testrail_connected:
+                    st.error("❌ TestRail 연결이 필요합니다. 왼쪽 사이드바에서 TestRail 연결을 완료해주세요.")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("⬅️ 이전 단계", type="secondary"):
+                            st.session_state.current_step = 5
+                            st.rerun()
+                    return
+                
+                st.success(f"✅ {len(testcases)}개의 테스트케이스를 TestRail에 등록할 준비가 되었습니다!")
+                
+                # 프로젝트 및 섹션 선택
+                client = st.session_state.testrail_client
+                
+                # 프로젝트 목록 로드
+                if 'testrail_projects' not in st.session_state:
+                    with st.spinner("TestRail 프로젝트 목록을 가져오는 중..."):
+                        projects = get_testrail_projects(client)
+                        st.session_state.testrail_projects = projects
+                
+                projects = st.session_state.get('testrail_projects', [])
+                
+                if not projects:
+                    st.error("❌ TestRail 프로젝트를 가져올 수 없습니다.")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("⬅️ 이전 단계", type="secondary"):
+                            st.session_state.current_step = 5
+                            st.rerun()
+                    return
+                
+                # 프로젝트 목록이 있는지 확인
+                if len(projects) == 0:
+                    st.warning("⚠️ 사용 가능한 프로젝트가 없습니다.")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("⬅️ 이전 단계", type="secondary"):
+                            st.session_state.current_step = 5
+                            st.rerun()
+                    return
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    # 프로젝트 선택 - 안전한 처리
+                    try:
+                        project_options = {}
+                        for p in projects:
+                            if isinstance(p, dict) and 'id' in p and 'name' in p:
+                                project_key = f"{p['name']} (ID: {p['id']})"
+                                project_options[project_key] = p['id']
+                            else:
+                                st.warning(f"⚠️ 잘못된 프로젝트 데이터: {p}")
+                        
+                        if not project_options:
+                            st.error("❌ 유효한 프로젝트가 없습니다.")
+                            return
+                        
+                        selected_project_name = st.selectbox(
+                            "📁 TestRail 프로젝트:",
+                            options=list(project_options.keys()),
+                            help="테스트케이스를 등록할 TestRail 프로젝트를 선택하세요"
+                        )
+                        selected_project_id = project_options[selected_project_name]
+                        
+                    except Exception as e:
+                        st.error(f"❌ 프로젝트 선택 오류: {str(e)}")
+                        
+                        # 디버깅 토글
+                        if st.button("🔍 디버깅 정보 보기", key="show_project_debug"):
+                            st.session_state.show_testrail_debug = True
+                            st.write("🔍 프로젝트 데이터:", projects)
+                        return
+                
+                with col2:
+                    # 스위트 목록 로드 (프로젝트 변경 시)
+                    if ('selected_project_id' not in st.session_state or 
+                        st.session_state.selected_project_id != selected_project_id):
+                        
+                        st.session_state.selected_project_id = selected_project_id
+                        with st.spinner("스위트 목록을 가져오는 중..."):
+                            suites = get_testrail_suites(client, selected_project_id)
+                            st.session_state.testrail_suites = suites
+                    
+                    suites = st.session_state.get('testrail_suites', [])
+                    
+                    if suites:
+                        try:
+                            suite_options = {}
+                            for s in suites:
+                                if isinstance(s, dict) and 'id' in s and 'name' in s:
+                                    # 완료된 스위트는 표시하지 않음
+                                    if not s.get('is_completed', False):
+                                        suite_key = f"{s['name']} (ID: {s['id']})"
+                                        suite_options[suite_key] = s['id']
+                                else:
+                                    st.warning(f"⚠️ 잘못된 스위트 데이터: {s}")
+                            
+                            if suite_options:
+                                selected_suite_name = st.selectbox(
+                                    "📦 TestRail 스위트:",
+                                    options=list(suite_options.keys()),
+                                    help="테스트케이스를 등록할 스위트를 선택하세요"
+                                )
+                                selected_suite_id = suite_options[selected_suite_name]
+                            else:
+                                st.warning("⚠️ 사용 가능한 스위트가 없습니다.")
+                                selected_suite_id = None
+                                
+                        except Exception as e:
+                            st.error(f"❌ 스위트 선택 오류: {str(e)}")
+                            
+                            # 디버깅 토글
+                            if st.button("🔍 디버깅 정보 보기", key="show_suite_debug"):
+                                st.session_state.show_testrail_debug = True
+                                st.write("🔍 스위트 데이터:", suites)
+                            selected_suite_id = None
+                    else:
+                        st.warning("⚠️ 선택한 프로젝트에 스위트가 없습니다.")
+                        selected_suite_id = None
+                
+                with col3:
+                    # 섹션 목록 로드 (스위트 변경 시)
+                    if (selected_suite_id and 
+                        ('selected_suite_id' not in st.session_state or 
+                         st.session_state.selected_suite_id != selected_suite_id)):
+                        
+                        st.session_state.selected_suite_id = selected_suite_id
+                        with st.spinner("섹션 목록을 가져오는 중..."):
+                            sections = get_testrail_sections(client, selected_project_id, selected_suite_id)
+                            st.session_state.testrail_sections = sections
+                    
+                    sections = st.session_state.get('testrail_sections', [])
+                    
+                    if selected_suite_id and sections:
+                        try:
+                            section_options = {}
+                            for s in sections:
+                                if isinstance(s, dict) and 'id' in s and 'name' in s:
+                                    section_key = f"{s['name']} (ID: {s['id']})"
+                                    section_options[section_key] = s['id']
+                                else:
+                                    st.warning(f"⚠️ 잘못된 섹션 데이터: {s}")
+                            
+                            if section_options:
+                                selected_section_name = st.selectbox(
+                                    "📄 TestRail 섹션:",
+                                    options=list(section_options.keys()),
+                                    help="테스트케이스를 등록할 섹션을 선택하세요"
+                                )
+                                selected_section_id = section_options[selected_section_name]
+                            else:
+                                st.warning("⚠️ 유효한 섹션이 없습니다.")
+                                selected_section_id = None
+                                
+                        except Exception as e:
+                            st.error(f"❌ 섹션 선택 오류: {str(e)}")
+                            
+                            # 디버깅 토글
+                            if st.button("🔍 디버깅 정보 보기", key="show_section_debug"):
+                                st.session_state.show_testrail_debug = True
+                                st.write("🔍 섹션 데이터:", sections)
+                            selected_section_id = None
+                    elif selected_suite_id:
+                        st.info("⏳ 스위트를 선택하면 섹션 목록이 표시됩니다.")
+                        selected_section_id = None
+                    else:
+                        st.info("💡 먼저 스위트를 선택해주세요.")
+                        selected_section_id = None
+                
+                st.markdown("---")
+                
+                # 등록 옵션
+                st.markdown("### 📋 등록 옵션")
+                
+                registration_mode = st.radio(
+                    "등록 방식 선택:",
+                    ["🔄 전체 등록", "☑️ 선택 등록"],
+                    help="전체 등록: 모든 테스트케이스 등록, 선택 등록: 원하는 테스트케이스만 선택하여 등록"
+                )
+                
+                # 선택 등록인 경우 체크박스 표시
+                selected_testcases = []
+                if registration_mode == "☑️ 선택 등록":
+                    st.markdown("#### ☑️ 등록할 테스트케이스 선택:")
+                    for i, testcase in enumerate(testcases):
+                        if st.checkbox(
+                            f"🧪 {testcase.get('title', f'테스트케이스 {i+1}')}",
+                            key=f"select_tc_{i}",
+                            value=True  # 기본값은 모두 선택
+                        ):
+                            selected_testcases.append((i, testcase))
+                else:
+                    selected_testcases = [(i, tc) for i, tc in enumerate(testcases)]
+                
+                # 등록 실행
+                st.markdown("---")
+                
+                if selected_section_id and selected_testcases:
+                    col1, col2, col3 = st.columns([2, 2, 1])
+                    
+                    with col1:
+                        if st.button("⬅️ 이전 단계", type="secondary"):
+                            st.session_state.current_step = 5
+                            st.rerun()
+                    
+                    with col2:
+                        if st.button(f"🚀 TestRail에 {len(selected_testcases)}개 등록", type="primary"):
+                            success_count = 0
+                            failure_count = 0
+                            
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+                            
+                            for i, (tc_index, testcase) in enumerate(selected_testcases):
+                                status_text.text(f"등록 중: {testcase.get('title', f'테스트케이스 {tc_index+1}')}")
+                                
+                                if create_testrail_testcase(client, selected_section_id, testcase):
+                                    success_count += 1
+                                else:
+                                    failure_count += 1
+                                
+                                progress_bar.progress((i + 1) / len(selected_testcases))
+                            
+                            progress_bar.progress(1.0)
+                            
+                            if failure_count == 0:
+                                st.success(f"🎉 {success_count}개의 테스트케이스가 TestRail에 성공적으로 등록되었습니다!")
+                                status_text.text("✅ 등록 완료!")
+                            else:
+                                st.warning(f"⚠️ {success_count}개 성공, {failure_count}개 실패")
+                                status_text.text(f"⚠️ 일부 등록 실패: {failure_count}개")
+                    
+                    with col3:
+                        if st.button("🔄 새로 시작", type="secondary"):
+                            # 세션 초기화
+                            for key in ['current_step', 'current_jira_task', 'generated_testcases', 'editable_testcases', 'edited_description', 'task_key', 'test_count_ai', 'generation_started', 'testrail_projects', 'testrail_suites', 'testrail_sections', 'selected_project_id', 'selected_suite_id']:
+                                if key in st.session_state:
+                                    del st.session_state[key]
+                            st.session_state.current_step = 1
+                            st.rerun()
+                else:
+                    st.info("💡 등록할 섹션과 테스트케이스를 선택해주세요.")
     
     elif tool_choice == "Jira 태스크 기반 유닛테스트 템플릿 생성":
         st.header("🧪 Jira 태스크 기반 유닛테스트 템플릿 생성")

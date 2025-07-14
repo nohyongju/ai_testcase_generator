@@ -2,7 +2,7 @@
   "jira": {
     "server_url": "https://enomix.atlassian.net",
     "username": "spectraadmin@spectra.co.kr",
-    "api_token": "c3BlY3RyYUFkbWluQHNwZWN0cmEuY28ua3I6QVRBVFQzeEZmR0YwQzhLNEt0eDI4VVpqMnZOMHZpXzB1SUx5bTczVzZNaEdZN2picktCMEcxbFQyUlNEbHhOcDFwMFdaUTh6dG5uQklzV2E1eTFxWXhZaG9qUGlpS19CX29wQmZlNl9vMUpHbUt4V3YtLUo2RmFOdEs1eGRkV2U3Mkx6dlBieGFoOEVJVXBCNXRwU3dkUno3Mmdoc2JUTjFseHlUbFhETUl1X214bGFTSVh0LXl3PUIxNTAzMDIx",
+    "api_token": "your_jira_api_token_here",
     "project_key": "PROJ"
   },
   "openai": {
@@ -11,10 +11,18 @@
     "max_tokens": 2000,
     "temperature": 0.7
   },
+  "testrail": {
+    "url": "https://your-domain.testrail.io",
+    "username": "your_email@example.com",
+    "password": "your_testrail_password_here",
+    "default_project_id": 1,
+    "default_section_id": 1
+  },
   "app": {
     "default_test_count": 5,
     "auto_connect": true,
     "auto_connect_ai": true,
+    "auto_connect_testrail": false,
     "theme": "light"
   }
 } 
