@@ -578,77 +578,7 @@ def fallback_generate_structured_testcases(jira_task: Dict, test_count: int = 5)
 
 
 
-def generate_unittest_template(function_name: str, test_count: int, jira_task: Optional[Dict] = None) -> str:
-    """Jira 태스크 정보를 포함한 테스트케이스 템플릿을 생성합니다."""
-    
-    jira_info = ""
-    if jira_task:
-        jira_info = f"""
-    Jira Task: {jira_task['key']} - {jira_task['summary']}
-    Status: {jira_task['status']}
-    Priority: {jira_task['priority']}
-    Issue Type: {jira_task['issue_type']}
-    """
-    
-    template = f"""import unittest
-from unittest.mock import patch, MagicMock
 
-
-class Test{function_name.capitalize()}(unittest.TestCase):
-    \"\"\"
-    {function_name} 함수를 위한 테스트케이스
-    AI 테스트케이스 생성기로 생성됨
-    {jira_info}
-    \"\"\"
-    
-    def setUp(self):
-        \"\"\"각 테스트 실행 전 설정\"\"\"
-        pass
-    
-    def tearDown(self):
-        \"\"\"각 테스트 실행 후 정리\"\"\"
-        pass
-
-"""
-    
-    test_templates = [
-        "정상_기능_테스트",
-        "예외_상황_테스트",
-        "경계값_테스트", 
-        "잘못된_입력_테스트",
-        "성능_테스트",
-        "보안_테스트",
-        "UI_동작_테스트",
-        "데이터_무결성_테스트"
-    ]
-    
-    for i in range(min(test_count, len(test_templates))):
-        template += f"""
-    def test_{function_name}_{test_templates[i]}(self):
-        \"\"\"
-        {test_templates[i].replace('_', ' ')} 시나리오
-        {'Based on Jira Task: ' + jira_task['key'] if jira_task else ''}
-        TODO: 실제 테스트 로직 구현 필요
-        \"\"\"
-        # Given (준비)
-        # 테스트 데이터 준비
-        
-        # When (실행)
-        # result = {function_name}(test_input)
-        
-        # Then (검증)
-        # self.assertEqual(result, expected)
-        self.fail("테스트 로직을 구현하세요!")
-
-"""
-    
-    template += """
-
-if __name__ == '__main__':
-    unittest.main()
-"""
-    
-    return template
 
 
 def render_jira_settings(config: Optional[Dict] = None) -> Dict:
@@ -1120,20 +1050,12 @@ def main():
         else:
             st.session_state.show_testrail_debug = False
     
-    # 도구 선택
-    st.sidebar.header("🛠️ 도구 선택")
-    tool_choice = st.sidebar.selectbox(
-        "생성 도구를 선택하세요:",
-        ["AI 기반 구조화된 테스트케이스 생성", "Jira 태스크 기반 유닛테스트 템플릿 생성"]
-    )
-    
     # 기본 테스트 개수 설정
     default_test_count = 5
     if config and 'app' in config:
         default_test_count = config['app'].get('default_test_count', 5)
     
     # 메인 컨텐츠
-    if tool_choice == "AI 기반 구조화된 테스트케이스 생성":
         st.header("🤖 AI 기반 구조화된 테스트케이스 생성")
         
         # 진행 단계 초기화
@@ -1804,131 +1726,7 @@ def main():
                 else:
                     st.info("💡 등록할 섹션과 테스트케이스를 선택해주세요.")
     
-    elif tool_choice == "Jira 태스크 기반 유닛테스트 템플릿 생성":
-        st.header("🧪 Jira 태스크 기반 유닛테스트 템플릿 생성")
-        
-        # 입력 섹션
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            task_key_unit = st.text_input(
-                "Jira 태스크 키를 입력하세요:",
-                placeholder="예: PROJ-123, DEV-456, BUG-789",
-                key="unit_task_key"
-            )
-            
-            function_name = st.text_input(
-                "함수명을 입력하세요:",
-                placeholder="예: process_payment, validate_user, send_notification"
-            )
-        
-        with col2:
-            st.markdown("### 📋 Jira 연동 장점")
-            st.markdown("""
-            - ✅ 태스크 정보 자동 포함
-            - ✅ 인수 조건 기반 테스트
-            - ✅ 이슈 타입별 맞춤 테스트
-            - ✅ 추적 가능한 테스트 코드
-            - ✅ 요구사항 연결성 확보
-            """)
-        
-        # 1단계: 태스크 읽기
-        if st.button("📖 Jira 태스크 읽기", type="primary", key="unit_read_task"):
-            if not hasattr(st.session_state, 'jira_connected') or not st.session_state.jira_connected:
-                st.error("❌ 먼저 Jira에 연결해주세요!")
-            elif task_key_unit.strip():
-                with st.spinner("Jira 태스크를 조회 중..."):
-                    jira_task = get_jira_task(st.session_state.jira_client, task_key_unit.strip())
-                    
-                    if jira_task:
-                        # 태스크 정보를 세션에 저장 (유닛테스트용)
-                        st.session_state.current_jira_task_unit = jira_task
-                        st.success(f"✅ Jira 태스트 '{task_key_unit}' 조회 성공!")
-                    else:
-                        if 'current_jira_task_unit' in st.session_state:
-                            del st.session_state.current_jira_task_unit
-            else:
-                st.warning("⚠️ Jira 태스크 키를 입력해주세요!")
-        
-        # 태스크 정보 표시 (읽기 성공 시)
-        if hasattr(st.session_state, 'current_jira_task_unit') and st.session_state.current_jira_task_unit:
-            jira_task = st.session_state.current_jira_task_unit
-            
-            with st.expander("📋 읽어온 Jira 태스크 정보", expanded=True):
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("태스크 키", jira_task['key'])
-                    st.metric("상태", jira_task['status'])
-                with col2:
-                    st.metric("우선순위", jira_task['priority'])
-                    st.metric("이슈 타입", jira_task['issue_type'])
-                with col3:
-                    st.text_area("요약", jira_task['summary'], height=70, disabled=True, key="unit_summary")
-                
-                st.text_area("설명", jira_task['description'], height=100, disabled=True, key="unit_description")
-                
-                if jira_task['acceptance_criteria']:
-                    st.text_area("인수 조건", jira_task['acceptance_criteria'], height=80, disabled=True, key="unit_ac")
-            
-            # 2단계: 유닛테스트 생성 설정
-            if function_name.strip():
-                st.markdown("---")
-                col1, col2 = st.columns([2, 1])
-                
-                with col1:
-                    st.markdown("### 🧪 유닛테스트 생성 설정")
-                    test_count = st.slider(
-                        "생성할 테스트케이스 수:",
-                        min_value=1,
-                        max_value=8,
-                        value=default_test_count
-                    )
-                    
-                    include_jira_info = st.checkbox("Jira 태스크 정보를 테스트 코드에 포함", value=True)
-                
-                with col2:
-                    st.markdown("### 📊 생성 예상")
-                    st.metric("테스트 메서드 수", test_count)
-                    st.metric("예상 코드 라인", test_count * 15 + 25)
-                    st.metric("연결된 Jira", jira_task['key'])
-                
-                # 유닛테스트 생성 버튼
-                if st.button("🚀 유닛테스트 코드 생성", type="secondary", use_container_width=True):
-                    with st.spinner("유닛테스트 템플릿을 생성 중..."):
-                        template = generate_unittest_template(
-                            function_name.strip(), 
-                            test_count, 
-                            jira_task if include_jira_info else None
-                        )
-                        
-                        st.success(f"✅ '{function_name}' 함수를 위한 Jira 연동 유닛테스트가 생성되었습니다!")
-                        
-                        # 코드 출력
-                        st.markdown("### 🔍 생성된 테스트 코드")
-                        st.code(template, language="python")
-                        
-                        # 다운로드 기능
-                        st.download_button(
-                            label="💾 테스트 코드 다운로드",
-                            data=template,
-                            file_name=f"test_{function_name}_{jira_task['key']}.py",
-                            mime="text/plain"
-                        )
-                        
-                        # 통계 정보
-                        st.markdown("### 📊 생성 통계")
-                        col1, col2, col3, col4 = st.columns(4)
-                        with col1:
-                            st.metric("테스트케이스 수", test_count)
-                        with col2:
-                            st.metric("코드 라인 수", len(template.split("\\n")))
-                        with col3:
-                            st.metric("Jira 태스크", jira_task['key'])
-                        with col4:
-                            st.metric("함수명", function_name)
-            else:
-                if hasattr(st.session_state, 'current_jira_task_unit'):
-                    st.info("💡 함수명을 입력하면 유닛테스트 생성 옵션이 나타납니다.")
+
     
     # 푸터
     st.markdown("---")

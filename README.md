@@ -110,11 +110,7 @@ python -m streamlit run ai_testcase_generator/app.py
 - 인수 조건(AC) 자동 추출
 - 이슈 타입별 맞춤 테스트케이스 생성
 
-### 2. 🧪 Jira 연동 유닛테스트 템플릿 생성
-- 함수명 + Jira 태스크 연동
-- Given-When-Then 패턴 적용
-- 추적 가능한 테스트 코드 생성
-- 요구사항 연결성 확보
+
 
 ### 3. 🧪 TestRail 연동 및 자동 등록
 - TestRail 프로젝트/섹션 선택
@@ -185,11 +181,7 @@ cp config.json.example config.json
 5. **시나리오 확인**: 생성된 테스트케이스 확인 및 편집
 6. **TestRail 등록**: TestRail 프로젝트/섹션 선택 후 테스트케이스 등록
 
-### 3. 유닛테스트 생성
-1. Jira 태스크 키 입력
-2. 함수명 입력
-3. 테스트케이스 수 선택
-4. 완성된 테스트 코드 다운로드
+
 
 ## 🎯 장점
 
