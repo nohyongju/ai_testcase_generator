@@ -91,7 +91,7 @@ python -m streamlit run ai_testcase_generator/app.py
     "default_test_count": 5,
     "auto_connect": true,
     "auto_connect_ai": true,
-    "auto_connect_testrail": false,
+    "auto_connect_testrail": true,
     "theme": "light"
   }
 }

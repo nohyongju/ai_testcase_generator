@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  ai-testcase-generator:
+    build: .
+    container_name: ai-testcase-generator
+    ports:
+      - "8501:8501"
+    volumes:
+      # 설정 파일을 외부에서 마운트 (보안상 권장)
+      - ./config.json:/app/config.json:ro
+    environment:
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+    restart: unless-stopped
+    networks:
+      - ai-testcase-network
+
+networks:
+  ai-testcase-network:
+    driver: bridge 
