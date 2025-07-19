@@ -765,6 +765,15 @@ def main():
                     """)
                 
                 if st.button("📖 Jira 태스크 읽기", type="primary", disabled=not task_key.strip()):
+                    # 새로운 태스크를 읽을 때 기존 테스트케이스 초기화
+                    if 'generated_testcases' in st.session_state:
+                        del st.session_state.generated_testcases
+                    if 'editable_testcases' in st.session_state:
+                        del st.session_state.editable_testcases
+                    if 'generation_started' in st.session_state:
+                        del st.session_state.generation_started
+                    if 'edited_description' in st.session_state:
+                        del st.session_state.edited_description
                     handle_jira_task_input()
             
             else:  # 직접 입력
@@ -798,6 +807,16 @@ def main():
                 
                 # 입력 완료 버튼
                 if st.button("✅ 테스트 정보 저장", type="primary", disabled=not task_title.strip()):
+                    # 새로운 태스크를 입력할 때 기존 테스트케이스 초기화
+                    if 'generated_testcases' in st.session_state:
+                        del st.session_state.generated_testcases
+                    if 'editable_testcases' in st.session_state:
+                        del st.session_state.editable_testcases
+                    if 'generation_started' in st.session_state:
+                        del st.session_state.generation_started
+                    if 'edited_description' in st.session_state:
+                        del st.session_state.edited_description
+                    
                     # 수동 입력된 정보로 태스크 객체 생성
                     manual_task = {
                         'key': f'TEST-{int(time.time())}',
@@ -856,16 +875,41 @@ def main():
                 
                 if has_changes:
                     st.success("✏️ 설명이 수정되었습니다. 이 내용이 테스트케이스 생성에 반영됩니다.")
+                    # 태스크 설명이 변경되면 기존 테스트케이스 초기화
+                    if 'generated_testcases' in st.session_state:
+                        del st.session_state.generated_testcases
+                    if 'generation_started' in st.session_state:
+                        del st.session_state.generation_started
                 
                 # 버튼
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.button("⬅️ 이전 단계", type="secondary"):
+                        # 이전 단계로 갈 때 태스크 정보가 변경되었으면 초기화
+                        if has_changes:
+                            if 'generated_testcases' in st.session_state:
+                                del st.session_state.generated_testcases
+                            if 'editable_testcases' in st.session_state:
+                                del st.session_state.editable_testcases
+                            if 'generation_started' in st.session_state:
+                                del st.session_state.generation_started
                         st.session_state.current_step = 1
                         st.rerun()
                 
                 with col2:
                     if st.button("➡️ 다음 단계: 생성 설정", type="primary"):
+                        # 태스크 설명이 변경되었는지 확인
+                        original_description = jira_task['description']
+                        current_description = st.session_state.get('edited_description', original_description)
+                        
+                        if current_description != original_description:
+                            # 설명이 변경되었으면 테스트케이스 초기화
+                            if 'generated_testcases' in st.session_state:
+                                del st.session_state.generated_testcases
+                            if 'generation_started' in st.session_state:
+                                del st.session_state.generation_started
+                            st.success("🔄 태스크 설명이 변경되어 테스트케이스가 새로 생성됩니다.")
+                        
                         st.session_state.current_step = 3
                         st.rerun()
         
@@ -873,14 +917,32 @@ def main():
         elif st.session_state.current_step == 3:
             st.markdown("## ⚙️ 3단계: 테스트케이스 생성 설정")
             
-            test_count_ai = st.number_input(
-                "생성할 테스트케이스 개수:",
-                min_value=1,
-                max_value=10,
-                value=st.session_state.get('test_count_ai', 5),
-                help="AI가 생성할 테스트케이스 개수"
-            )
-            st.session_state.test_count_ai = test_count_ai
+            # 테스트 개수 선택을 위한 컬럼 레이아웃
+            col1, col2, col3 = st.columns([2, 1, 1])
+            
+            with col1:
+                st.markdown("**생성할 테스트케이스 개수:**")
+                current_count = st.session_state.get('test_count_ai', 5)
+
+                # 3개 컬럼으로 레이아웃: 숫자박스 | 감소버튼 | 증가버튼
+                input_col1, input_col2, input_col3 = st.columns([3, 1, 1])
+                
+                with input_col1:
+                    st.markdown(f"<div style='text-align: center; font-size: 18px; font-weight: bold; padding: 8px; background-color: #f0f2f6; border-radius: 5px;'>{current_count}</div>", unsafe_allow_html=True)
+                
+                with input_col2:
+                    if st.button("🔽", help="개수 감소", disabled=current_count <= 1, key="decrease_btn"):
+                        st.session_state.test_count_ai = current_count - 1
+                        st.rerun()
+                
+                with input_col3:
+                    if st.button("🔼", help="개수 증가", disabled=current_count >= 10, key="increase_btn"):
+                        st.session_state.test_count_ai = current_count + 1
+                        st.rerun()
+                
+                st.caption("💡 감소/증가 버튼으로 개수를 조절하세요")
+            
+
             
             st.markdown("---")
             
@@ -899,6 +961,26 @@ def main():
             
             with col2:
                 if st.button("🚀 테스트케이스 생성", type="primary"):
+                    # 태스크 설명이 변경되었는지 확인
+                    jira_task = st.session_state.current_jira_task
+                    original_description = jira_task['description']
+                    current_description = st.session_state.get('edited_description', original_description)
+                    
+                    # 태스크 설명이 변경되었는지 확인
+                    if current_description != original_description:
+                        # 설명이 변경되었으면 테스트케이스 초기화
+                        if 'generated_testcases' in st.session_state:
+                            del st.session_state.generated_testcases
+                        if 'editable_testcases' in st.session_state:
+                            del st.session_state.editable_testcases
+                        if 'generation_started' in st.session_state:
+                            del st.session_state.generation_started
+                        st.success("🔄 태스크 설명이 변경되어 테스트케이스가 새로 생성됩니다.")
+                    
+                    # 테스트 개수 업데이트 (초기화하지 않음)
+                    current_test_count = st.session_state.get('test_count_ai', 5)
+                    st.session_state.previous_test_count = current_test_count
+                    
                     st.session_state.current_step = 4
                     st.rerun()
         
