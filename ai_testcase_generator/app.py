@@ -626,58 +626,15 @@ def main():
     # 설정파일 로드
     config = load_config()
     
-    # Jira 연결 설정
+    # 연결 상태 표시
     with st.sidebar:
-        st.header("🔗 Jira 연결 설정")
+        st.header("🔗 연결 상태")
         
-        # 설정파일 상태 표시
+        # 설정파일 상태
         if config:
-            st.success("✅ 설정파일(config.json) 로드됨")
-            if validate_jira_config(config):
-                st.success("✅ Jira 설정 검증 완료")
-            else:
-                st.warning("⚠️ Jira 설정 불완전 - 아래에서 수정하세요")
+            st.success("✅ 설정파일 로드됨")
         else:
-            st.info("💡 설정파일이 없습니다. 아래에서 입력하세요")
-            st.markdown("📝 `config.json.example` 파일을 참고하여 `config.json`을 생성할 수 있습니다")
-        
-        # Jira 설정 UI
-        jira_settings = render_jira_settings(config)
-        
-        # 연결 테스트 버튼
-        if st.button("🔌 Jira 연결 테스트"):
-            server_url = jira_settings['server_url']
-            username = jira_settings['username']
-            api_token = jira_settings['api_token']
-            
-            if server_url and username and api_token:
-                jira = connect_to_jira(server_url, username, api_token)
-                if jira:
-                    st.success("✅ Jira 연결 성공!")
-                    st.session_state.jira_connected = True
-                    st.session_state.jira_client = jira
-                    
-                    # 설정 저장
-                    if jira_settings['save_config']:
-                        new_config = {
-                            "jira": {
-                                "server_url": server_url,
-                                "username": username,
-                                "api_token": api_token,
-                                "project_key": "PROJ"
-                            },
-                            "app": {
-                                "default_test_count": 5,
-                                "auto_connect": True,
-                                "theme": "light"
-                            }
-                        }
-                        if save_config(new_config):
-                            st.success("💾 설정이 config.json에 저장되었습니다!")
-                else:
-                    st.session_state.jira_connected = False
-            else:
-                st.warning("모든 필드를 입력해주세요.")
+            st.warning("⚠️ 설정파일 없음")
         
         # 자동 연결 (설정파일이 있고 유효한 경우)
         if config and validate_jira_config(config) and config.get('app', {}).get('auto_connect', False):
@@ -691,15 +648,9 @@ def main():
                 if jira:
                     st.session_state.jira_connected = True
                     st.session_state.jira_client = jira
-                    st.success("🔄 Jira 자동 연결 성공!")
         
-        # OpenAI API 설정
-        st.header("🤖 AI 설정")
-        
-        # 설정파일에서 OpenAI 설정 로드
+        # OpenAI 자동 연결
         openai_config = config.get('openai', {}) if config else {}
-        
-        # OpenAI 자동 연결 (설정파일에 키가 있고 auto_connect_ai가 True인 경우)
         if (config and openai_config.get('api_key') and 
             config.get('app', {}).get('auto_connect_ai', False) and 
             'openai_connected' not in st.session_state):
@@ -708,182 +659,11 @@ def main():
             if client:
                 st.session_state.openai_connected = True
                 st.session_state.openai_client = client
-                st.success("🔄 AI 자동 연결 성공!")
-            else:
-                st.session_state.openai_connected = False
         
-        # OpenAI API 키 입력
-        if openai_config.get('api_key'):
-            # 설정 수정 모드 토글
-            if 'edit_ai_settings' not in st.session_state:
-                st.session_state.edit_ai_settings = False
-            
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.caption("💡 config.json에서 설정이 로드되었습니다")
-            with col2:
-                if st.button("⚙️ 설정 수정" if not st.session_state.edit_ai_settings else "💾 수정 완료", key="toggle_ai_edit"):
-                    st.session_state.edit_ai_settings = not st.session_state.edit_ai_settings
-                    st.rerun()
-            
-            if st.session_state.edit_ai_settings:
-                # 편집 모드
-                new_api_key = st.text_input(
-                    "OpenAI API 키:",
-                    value="",
-                    type="password",
-                    placeholder="새 API 키를 입력하세요",
-                    help="새로운 API 키를 입력하면 현재 세션에서만 사용됩니다"
-                )
-                
-                # 모델 선택
-                available_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo-preview"]
-                current_model = openai_config.get('model', 'gpt-3.5-turbo')
-                try:
-                    model_index = available_models.index(current_model)
-                except ValueError:
-                    model_index = 0
-                
-                new_model = st.selectbox(
-                    "모델:",
-                    options=available_models,
-                    index=model_index
-                )
-                
-                new_max_tokens = st.number_input(
-                    "최대 토큰 수:",
-                    value=openai_config.get('max_tokens', 2000),
-                    min_value=100,
-                    max_value=4000,
-                    step=100
-                )
-                
-                new_temperature = st.slider(
-                    "온도:",
-                    value=openai_config.get('temperature', 0.7),
-                    min_value=0.0,
-                    max_value=1.0,
-                    step=0.1
-                )
-                
-                # 설정 적용
-                if new_api_key.strip():
-                    st.session_state.override_openai_config = {
-                        'api_key': new_api_key.strip(),
-                        'model': new_model,
-                        'max_tokens': new_max_tokens,
-                        'temperature': new_temperature
-                    }
-                    # 즉시 AI 재연결
-                    client = setup_openai_client(new_api_key.strip())
-                    if client:
-                        st.session_state.openai_connected = True
-                        st.session_state.openai_client = client
-                        st.success("✅ AI 설정이 업데이트되었습니다!")
-                    else:
-                        st.session_state.openai_connected = False
-                        st.error("❌ API 키가 유효하지 않습니다.")
-                else:
-                    # API 키 없이도 다른 설정들은 업데이트
-                    if 'override_openai_config' in st.session_state:
-                        st.session_state.override_openai_config.update({
-                            'model': new_model,
-                            'max_tokens': new_max_tokens,
-                            'temperature': new_temperature
-                        })
-                    else:
-                        st.session_state.override_openai_config = {
-                            'api_key': openai_config['api_key'],  # 기존 키 유지
-                            'model': new_model,
-                            'max_tokens': new_max_tokens,
-                            'temperature': new_temperature
-                        }
-                
-            else:
-                # 읽기 전용 모드
-                masked_key = openai_config['api_key'][:10] + "..." + openai_config['api_key'][-10:]
-                st.text_input(
-                    "OpenAI API 키:",
-                    value=masked_key,
-                    disabled=True,
-                    help="config.json 파일에서 로드된 API 키"
-                )
-                
-                # 오버라이드된 설정이 있으면 표시
-                display_config = st.session_state.get('override_openai_config', openai_config)
-                
-                st.text_input(
-                    "모델:",
-                    value=display_config.get('model', 'gpt-3.5-turbo'),
-                    disabled=True
-                )
-                st.number_input(
-                    "최대 토큰 수:",
-                    value=display_config.get('max_tokens', 2000),
-                    disabled=True
-                )
-                st.slider(
-                    "온도:",
-                    value=display_config.get('temperature', 0.7),
-                    min_value=0.0,
-                    max_value=1.0,
-                    step=0.1,
-                    disabled=True
-                )
-                
-                # 연결 테스트 버튼 추가
-                if st.button("🔌 AI 연결 테스트", key="test_current_ai"):
-                    api_key = display_config.get('api_key', openai_config.get('api_key'))
-                    if api_key:
-                        client = setup_openai_client(api_key)
-                        if client:
-                            st.session_state.openai_connected = True
-                            st.session_state.openai_client = client
-                            st.success("✅ AI 연결 성공!")
-                        else:
-                            st.session_state.openai_connected = False
-                            st.error("❌ AI 연결 실패!")
-                    else:
-                        st.error("❌ API 키가 없습니다.")
-        else:
-            openai_api_key = st.text_input(
-                "OpenAI API 키:",
-                type="password",
-                placeholder="sk-...",
-                help="테스트케이스 생성을 위한 OpenAI API 키를 입력하세요"
-            )
-            
-            if st.button("🔌 AI 연결 테스트"):
-                if openai_api_key:
-                    client = setup_openai_client(openai_api_key)
-                    if client:
-                        st.success("✅ OpenAI API 연결 성공!")
-                        st.session_state.openai_connected = True
-                        st.session_state.openai_client = client
-                    else:
-                        st.session_state.openai_connected = False
-                else:
-                    st.warning("OpenAI API 키를 입력해주세요.")
-        
-        # AI 연결 상태 표시
-        if hasattr(st.session_state, 'openai_connected') and st.session_state.openai_connected:
-            st.success("🤖 AI: 연결됨")
-            # 오버라이드된 설정이 있으면 그것을 표시
-            display_config = st.session_state.get('override_openai_config', openai_config)
-            if display_config.get('model'):
-                st.caption(f"모델: {display_config['model']}")
-        else:
-            st.info("🤖 AI: 미연결")
-        
-        # TestRail API 설정
-        st.header("🧪 TestRail 설정")
-        
-        # 설정파일에서 TestRail 설정 로드
+        # TestRail 자동 연결
         testrail_config = config.get('testrail', {}) if config else {}
-        
-        # TestRail 자동 연결 (설정파일에 정보가 있고 auto_connect_testrail이 True인 경우)
-        if (config and testrail_config.get('url') and testrail_config.get('username') and testrail_config.get('password') and
-            config.get('app', {}).get('auto_connect_testrail', False) and 
+        if (config and testrail_config.get('url') and testrail_config.get('username') and 
+            testrail_config.get('password') and config.get('app', {}).get('auto_connect_testrail', False) and 
             'testrail_connected' not in st.session_state):
             
             client = setup_testrail_client(
@@ -894,161 +674,10 @@ def main():
             if client:
                 st.session_state.testrail_connected = True
                 st.session_state.testrail_client = client
-                st.success("🔄 TestRail 자동 연결 성공!")
-            else:
-                st.session_state.testrail_connected = False
         
-        # TestRail 설정 입력
-        if testrail_config.get('url') and testrail_config.get('username') and testrail_config.get('password'):
-            # 설정 수정 모드 토글
-            if 'edit_testrail_settings' not in st.session_state:
-                st.session_state.edit_testrail_settings = False
-            
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.caption("💡 config.json에서 설정이 로드되었습니다")
-            with col2:
-                if st.button("⚙️ 설정 수정" if not st.session_state.edit_testrail_settings else "💾 수정 완료", key="toggle_testrail_edit"):
-                    st.session_state.edit_testrail_settings = not st.session_state.edit_testrail_settings
-                    st.rerun()
-            
-            if st.session_state.edit_testrail_settings:
-                # 편집 모드
-                new_url = st.text_input(
-                    "TestRail URL:",
-                    value=testrail_config['url'],
-                    placeholder="https://your-domain.testrail.io",
-                    help="TestRail 인스턴스 URL"
-                )
-                
-                new_username = st.text_input(
-                    "TestRail 사용자명:",
-                    value=testrail_config['username'],
-                    placeholder="your_email@example.com",
-                    help="TestRail 로그인 이메일"
-                )
-                
-                new_password = st.text_input(
-                    "TestRail 패스워드:",
-                    value="",
-                    type="password",
-                    placeholder="새 패스워드를 입력하세요",
-                    help="새로운 패스워드를 입력하면 현재 세션에서만 사용됩니다"
-                )
-                
-                # 연결 테스트 버튼
-                if st.button("🔌 TestRail 연결 테스트", key="test_new_testrail"):
-                    if new_url and new_username and new_password:
-                        client = setup_testrail_client(new_url, new_username, new_password)
-                        if client:
-                            st.session_state.testrail_connected = True
-                            st.session_state.testrail_client = client
-                            st.session_state.override_testrail_config = {
-                                'url': new_url,
-                                'username': new_username,
-                                'password': new_password
-                            }
-                            st.success("✅ TestRail 설정이 업데이트되었습니다!")
-                        else:
-                            st.session_state.testrail_connected = False
-                    else:
-                        st.warning("모든 필드를 입력해주세요.")
-                
-                # 패스워드 없이도 URL/사용자명은 업데이트
-                if not new_password.strip():
-                    if 'override_testrail_config' in st.session_state:
-                        st.session_state.override_testrail_config.update({
-                            'url': new_url,
-                            'username': new_username
-                        })
-                    else:
-                        st.session_state.override_testrail_config = {
-                            'url': new_url,
-                            'username': new_username,
-                            'password': testrail_config['password']  # 기존 패스워드 유지
-                        }
-            
-            else:
-                # 읽기 전용 모드
-                display_config = st.session_state.get('override_testrail_config', testrail_config)
-                
-                st.text_input(
-                    "TestRail URL:",
-                    value=display_config['url'],
-                    disabled=True
-                )
-                st.text_input(
-                    "TestRail 사용자명:",
-                    value=display_config['username'],
-                    disabled=True
-                )
-                masked_password = "********"
-                st.text_input(
-                    "TestRail 패스워드:",
-                    value=masked_password,
-                    type="password",
-                    disabled=True
-                )
-                
-                # 연결 테스트 버튼 추가
-                if st.button("🔌 TestRail 연결 테스트", key="test_current_testrail"):
-                    config_to_use = display_config if 'override_testrail_config' in st.session_state else testrail_config
-                    url = config_to_use.get('url')
-                    username = config_to_use.get('username')
-                    password = config_to_use.get('password')
-                    
-                    if url and username and password:
-                        client = setup_testrail_client(url, username, password)
-                        if client:
-                            st.session_state.testrail_connected = True
-                            st.session_state.testrail_client = client
-                            st.success("✅ TestRail 연결 성공!")
-                        else:
-                            st.session_state.testrail_connected = False
-                            st.error("❌ TestRail 연결 실패!")
-                    else:
-                        st.error("❌ TestRail 설정이 불완전합니다.")
-        else:
-            testrail_url = st.text_input(
-                "TestRail URL:",
-                placeholder="https://your-domain.testrail.io",
-                help="TestRail 인스턴스 URL을 입력하세요"
-            )
-            testrail_username = st.text_input(
-                "TestRail 사용자명:",
-                placeholder="your_email@example.com",
-                help="TestRail 로그인 이메일을 입력하세요"
-            )
-            testrail_password = st.text_input(
-                "TestRail 패스워드:",
-                type="password",
-                placeholder="your_password",
-                help="TestRail 로그인 패스워드를 입력하세요"
-            )
-            
-            if st.button("🔌 TestRail 연결 테스트"):
-                if testrail_url and testrail_username and testrail_password:
-                    client = setup_testrail_client(testrail_url, testrail_username, testrail_password)
-                    if client:
-                        st.success("✅ TestRail 연결 성공!")
-                        st.session_state.testrail_connected = True
-                        st.session_state.testrail_client = client
-                    else:
-                        st.session_state.testrail_connected = False
-                else:
-                    st.warning("모든 필드를 입력해주세요.")
+
         
-        # TestRail 연결 상태 표시
-        if hasattr(st.session_state, 'testrail_connected') and st.session_state.testrail_connected:
-            st.success("🧪 TestRail: 연결됨")
-        else:
-            st.info("🧪 TestRail: 미연결")
-        
-        # 디버깅 토글
-        if st.checkbox("🔍 TestRail API 디버깅 정보 표시", key="testrail_debug_toggle"):
-            st.session_state.show_testrail_debug = True
-        else:
-            st.session_state.show_testrail_debug = False
+
     
     # 기본 테스트 개수 설정
     default_test_count = 5
