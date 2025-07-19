@@ -1086,49 +1086,107 @@ def main():
         jira_connected = hasattr(st.session_state, 'jira_connected') and st.session_state.jira_connected
         ai_connected = hasattr(st.session_state, 'openai_connected') and st.session_state.openai_connected
         
-        if not jira_connected:
-            st.error("❌ Jira 연결이 필요합니다. 왼쪽 사이드바에서 Jira 연결을 완료해주세요.")
-            return
-        
         # Step 1: 태스크 입력
         if st.session_state.current_step == 1:
-            st.markdown("## 📝 1단계: Jira 태스크 입력")
+            st.markdown("## 📝 1단계: 태스크 정보 입력")
             
-            def handle_task_input():
-                if task_key.strip():
-                    with st.spinner("Jira 태스크를 조회 중..."):
-                        jira_task = get_jira_task(st.session_state.jira_client, task_key.strip())
-                        
-                        if jira_task:
-                            st.session_state.current_jira_task = jira_task
-                            st.session_state.task_key = task_key.strip()
-                            st.session_state.current_step = 2
-                            st.success(f"✅ 태스크 '{task_key}' 조회 성공!")
-                            st.rerun()
-                        else:
-                            st.error("❌ 태스크를 찾을 수 없습니다. 태스크 키를 확인해주세요.")
+            # 입력 방식 선택
+            input_method = st.radio(
+                "태스크 정보 입력 방식을 선택하세요:",
+                ["🔗 Jira에서 태스크 가져오기", "✏️ 직접 태스크 정보 입력"],
+                horizontal=True
+            )
             
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                task_key = st.text_input(
-                    "Jira 태스크 키를 입력하세요:",
-                    placeholder="예: PROJ-123, DEV-456, BUG-789",
-                    value=st.session_state.get('task_key', ''),
-                    on_change=handle_task_input,
-                    key="task_key_input"
+            if input_method == "🔗 Jira에서 태스크 가져오기":
+                if not jira_connected:
+                    st.error("❌ Jira 연결이 필요합니다. 왼쪽 사이드바에서 Jira 연결을 완료해주세요.")
+                    return
+                
+                st.markdown("### 🔗 Jira 태스크 조회")
+                
+                def handle_jira_task_input():
+                    if task_key.strip():
+                        with st.spinner("Jira 태스크를 조회 중..."):
+                            jira_task = get_jira_task(st.session_state.jira_client, task_key.strip())
+                            
+                            if jira_task:
+                                st.session_state.current_jira_task = jira_task
+                                st.session_state.task_key = task_key.strip()
+                                st.session_state.current_step = 2
+                                st.success(f"✅ 태스크 '{task_key}' 조회 성공!")
+                                st.rerun()
+                            else:
+                                st.error("❌ 태스크를 찾을 수 없습니다. 태스크 키를 확인해주세요.")
+                
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    task_key = st.text_input(
+                        "Jira 태스크 키를 입력하세요:",
+                        placeholder="예: PROJ-123, DEV-456, BUG-789",
+                        value=st.session_state.get('task_key', ''),
+                        key="jira_task_key_input"
+                    )
+                
+                with col2:
+                    st.markdown("### 💡 입력 가이드")
+                    st.markdown("""
+                    - 형식: **PROJ-123**
+                    - 대소문자 구분 없음
+                    - 하이픈(-) 포함 필수
+                    """)
+                
+                if st.button("📖 Jira 태스크 읽기", type="primary", disabled=not task_key.strip()):
+                    handle_jira_task_input()
+            
+            else:  # 직접 입력
+                st.markdown("### ✏️ 직접 태스크 정보 입력")
+                
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    # 핵심 정보만 입력
+                    task_title = st.text_input(
+                        "테스트 대상 제목:",
+                        placeholder="예: 사용자 로그인 기능, 결제 프로세스, 데이터 검증",
+                        value=st.session_state.get('task_title', ''),
+                        key="manual_task_title"
+                    )
+                
+                with col2:
+                    st.markdown("### 💡 입력 팁")
+                    st.markdown("""
+                    - **제목**: 테스트할 기능이나 수정사항
+                    - **설명**: 상세한 요구사항이나 동작 방식
+                    """)
+                
+                # 상세 정보 입력
+                task_description = st.text_area(
+                    "상세 설명:",
+                    placeholder="테스트할 기능의 상세한 내용, 동작 방식, 요구사항을 입력하세요",
+                    value=st.session_state.get('task_description', ''),
+                    height=300,
+                    key="manual_task_description"
                 )
-            
-            with col2:
-                st.markdown("### 💡 입력 가이드")
-                st.markdown("""
-                - 형식: **PROJ-123**
-                - 대소문자 구분 없음
-                - 하이픈(-) 포함 필수
-                - **Enter 키로 자동 조회**
-                """)
-            
-            if st.button("📖 태스크 읽기", type="primary", disabled=not task_key.strip()):
-                handle_task_input()
+                
+                # 입력 완료 버튼
+                if st.button("✅ 테스트 정보 저장", type="primary", disabled=not task_title.strip()):
+                    # 수동 입력된 정보로 태스크 객체 생성
+                    manual_task = {
+                        'key': f'TEST-{int(time.time())}',
+                        'summary': task_title,
+                        'description': task_description,
+                        'acceptance_criteria': '',
+                        'status': 'To Do',
+                        'priority': 'Medium',
+                        'issue_type': '기능 테스트'
+                    }
+                    
+                    st.session_state.current_jira_task = manual_task
+                    st.session_state.task_key = manual_task['key']
+                    st.session_state.current_step = 2
+                    st.success("✅ 테스트 정보가 저장되었습니다!")
+                    st.rerun()
+        
+
         
         # Step 2: 태스크 정보 확인
         elif st.session_state.current_step == 2:
@@ -1733,8 +1791,7 @@ def main():
     st.markdown(
         """
         <div style='text-align: center; color: #666;'>
-            Made with ❤️ by AI 테스트케이스 생성기 (Jira 연동) | 
-            <a href='https://github.com/yjnoh' target='_blank'>GitHub</a>
+            Made with ❤️ by AI 테스트케이스 생성기
         </div>
         """,
         unsafe_allow_html=True
