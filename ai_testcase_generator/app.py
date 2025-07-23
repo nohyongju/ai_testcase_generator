@@ -4,9 +4,9 @@ import os
 import time
 import requests
 import base64
+import re
 from typing import List, Dict, Optional
 from atlassian import Jira
-import re
 from openai import OpenAI
 
 
@@ -785,7 +785,6 @@ def main():
                     figma_url = st.text_input("Figma 링크 입력", value=st.session_state.get('figma_url_input_direct', ''), key="figma_url_input_direct", placeholder="https://www.figma.com/file/FILEKEY/...?node-id=6-253")
                     file_key = ""
                     node_id = ""
-                    import re
                     if figma_url:
                         m = re.search(r'figma.com/(file|design)/([\w\d]+)', figma_url)
                         if m:
@@ -841,7 +840,6 @@ def main():
                     figma_url = st.text_input("Figma 링크를 입력하세요", value=st.session_state.get('figma_url_input_step', ''), key="figma_url_input_step", placeholder="https://www.figma.com/file/FILEKEY/...?node-id=6-253")
                     file_key = ""
                     node_id = ""
-                    import re
                     if figma_url:
                         m = re.search(r'figma.com/(file|design)/([\w\d]+)', figma_url)
                         if m:
@@ -1345,8 +1343,18 @@ def main():
                             # 번호 자동 추가 (이미 번호가 있으면 제거 후 재추가)
                             formatted_steps = []
                             for j, step in enumerate(new_steps, 1):
-                                # 기존 번호 제거
-                                step_clean = re.sub(r'^\d+\.\s*', '', step)
+                                # step이 None이거나 문자열이 아니면 빈 문자열로 처리, 아니면 str 변환
+                                if step is None:
+                                    step_str = ''
+                                elif not isinstance(step, str):
+                                    step_str = str(step)
+                                else:
+                                    step_str = step
+                                try:
+                                    step_clean = re.sub(r'^\d+\.\s*', '', step_str)
+                                except Exception as e:
+                                    st.warning(f"[디버그] step 변환 오류: type={type(step_str)}, 값={step_str}, 에러={e}")
+                                    step_clean = step_str if isinstance(step_str, str) else ''
                                 formatted_steps.append(f"{j}. {step_clean}")
                             testcase['steps'] = formatted_steps
                         else:
