@@ -722,7 +722,7 @@ def main():
             # 입력 방식 선택
             input_method = st.radio(
                 "태스크 정보 입력 방식을 선택하세요:",
-                ["🔗 Jira에서 태스크 가져오기", "✏️ 직접 태스크 정보 입력"],
+                ["🔗 Jira에서 태스크 가져오기", "🎨 Figma에서 요구사항 선택", "✏️ 직접 태스크 정보 입력"],
                 horizontal=True
             )
             
@@ -776,6 +776,193 @@ def main():
                         del st.session_state.edited_description
                     handle_jira_task_input()
             
+            elif input_method == "🎨 Figma에서 요구사항 선택":
+                tab1, tab2 = st.tabs(["🔗 링크 기반 바로 생성", "🗂️ 단계별 선택"])
+                with tab1:
+                    st.markdown("#### Figma 링크를 입력하면 바로 테스트 생성!")
+                    figma_config = config.get('figma', {}) if config else {}
+                    api_key = figma_config.get('api_key', '')
+                    figma_url = st.text_input("Figma 링크 입력", value=st.session_state.get('figma_url_input_direct', ''), key="figma_url_input_direct", placeholder="https://www.figma.com/file/FILEKEY/...?node-id=6-253")
+                    file_key = ""
+                    node_id = ""
+                    import re
+                    if figma_url:
+                        m = re.search(r'figma.com/(file|design)/([\w\d]+)', figma_url)
+                        if m:
+                            file_key = m.group(2)
+                        m2 = re.search(r'node-id=([\w-]+)', figma_url)
+                        if m2:
+                            node_id = m2.group(1).replace('-', ':')  # 하이픈을 콜론으로 변환
+                    if api_key and file_key and node_id:
+                        st.markdown("**텍스트 추출 API URL**")
+                        st.code(f"https://api.figma.com/v1/files/{file_key}/nodes?ids={node_id}", language="text")
+                        if st.button("🚀 바로 테스트 생성 시작", type="primary"):
+                            try:
+                                with st.spinner(f"Figma 노드 전체 텍스트 추출 중... (fileKey: {file_key}, nodeId: {node_id})"):
+                                    headers = {"X-Figma-Token": api_key}
+                                    url = f"https://api.figma.com/v1/files/{file_key}/nodes?ids={node_id}"
+                                    resp = requests.get(url, headers=headers)
+                                    if resp.status_code == 200:
+                                        data = resp.json()
+                                        if node_id not in data['nodes']:
+                                            st.error(f"이 node-id({node_id})는 Figma API에서 지원하지 않거나, 존재하지 않습니다.")
+                                            return
+                                        node = data['nodes'][node_id]['document']
+                                        descs = []
+                                        def extract_text(n):
+                                            if n['type'] == 'TEXT' and 'characters' in n:
+                                                descs.append(n['characters'])
+                                            for c in n.get('children', []):
+                                                extract_text(c)
+                                        extract_text(node)
+                                        desc = "\n".join(descs)
+                                        figma_task = {
+                                            'key': f'FIGMA-{node_id}',
+                                            'summary': f"Figma 노드 {node_id}",
+                                            'description': desc or f"Figma 노드 전체 텍스트 없음",
+                                            'acceptance_criteria': '',
+                                            'status': 'Figma',
+                                            'priority': 'Medium',
+                                            'issue_type': 'Figma 요구사항'
+                                        }
+                                        st.session_state.current_jira_task = figma_task
+                                        st.session_state.task_key = figma_task['key']
+                                        st.session_state.current_step = 2
+                                        st.success("✅ Figma 요구사항이 선택되었습니다!")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Figma 노드 조회 실패: {resp.status_code} - {resp.text}")
+                            except Exception as e:
+                                st.error(f"Figma 노드 전체 텍스트 추출 오류: {str(e)}")
+                with tab2:
+                    # 단계별 선택: 페이지/레이어 선택 방식 복구
+                    figma_config = config.get('figma', {}) if config else {}
+                    api_key = figma_config.get('api_key', '')
+                    figma_url = st.text_input("Figma 링크를 입력하세요", value=st.session_state.get('figma_url_input_step', ''), key="figma_url_input_step", placeholder="https://www.figma.com/file/FILEKEY/...?node-id=6-253")
+                    file_key = ""
+                    node_id = ""
+                    import re
+                    if figma_url:
+                        m = re.search(r'figma.com/(file|design)/([\w\d]+)', figma_url)
+                        if m:
+                            file_key = m.group(2)
+                        m2 = re.search(r'node-id=([\w-]+)', figma_url)
+                        if m2:
+                            node_id = m2.group(1)
+                    # 1. 페이지(children) 목록 조회
+                    pages = []
+                    page_id_map = {}
+                    page_api_data = None
+                    selected_page = None
+                    selected_layer = None
+                    if api_key and file_key:
+                        try:
+                            with st.spinner(f"Figma에서 페이지 목록 불러오는 중... (fileKey: {file_key})"):
+                                headers = {"X-Figma-Token": api_key}
+                                url = f"https://api.figma.com/v1/files/{file_key}"
+                                resp = requests.get(url, headers=headers)
+                                if resp.status_code == 200:
+                                    data = resp.json()
+                                    page_api_data = data
+                                    for page in data['document']['children']:
+                                        pages.append(page['name'])
+                                        page_id_map[page['name']] = page['id']
+                                else:
+                                    st.error(f"Figma 파일 조회 실패: {resp.status_code} - {resp.text}")
+                        except Exception as e:
+                            st.error(f"Figma API 오류: {str(e)}")
+                    if api_key and file_key and not pages:
+                        st.warning("⚠️ 페이지 목록이 비어 있습니다. 링크와 API Key를 확인하세요.")
+                        if page_api_data:
+                            st.write("Figma API 응답:", page_api_data)
+                    # node-id가 있으면 해당 페이지 자동 선택
+                    if node_id and page_id_map:
+                        for name, pid in page_id_map.items():
+                            if pid == node_id:
+                                selected_page = name
+                                break
+                    col_page1, col_page2 = st.columns([3, 2])
+                    with col_page1:
+                        selected_page = st.selectbox("페이지를 선택하세요", options=pages, key="figma_page_select_step", index=pages.index(selected_page) if selected_page in pages else 0) if pages else None
+                    with col_page2:
+                        if file_key:
+                            st.markdown("**페이지 목록 API URL**")
+                            st.code(f"https://api.figma.com/v1/files/{file_key}", language="text")
+                    # 2. 해당 페이지의 children(프레임/컴포넌트 등) 목록 조회
+                    layers = []
+                    layer_id_map = {}
+                    layer_api_data = None
+                    if api_key and file_key and selected_page:
+                        try:
+                            with st.spinner(f"Figma에서 하위 요소(프레임/컴포넌트 등) 목록 불러오는 중... (fileKey: {file_key}, page: {selected_page})"):
+                                headers = {"X-Figma-Token": api_key}
+                                url = f"https://api.figma.com/v1/files/{file_key}/nodes?ids={page_id_map[selected_page]}"
+                                resp = requests.get(url, headers=headers)
+                                if resp.status_code == 200:
+                                    data = resp.json()
+                                    layer_api_data = data
+                                    page_node = data['nodes'][page_id_map[selected_page]]['document']
+                                    for child in page_node.get('children', []):
+                                        label = f"{child.get('name', '[이름없음]')} ({child.get('type', '-')})"
+                                        layers.append(label)
+                                        layer_id_map[label] = child['id']
+                                else:
+                                    st.error(f"Figma 페이지 children 조회 실패: {resp.status_code} - {resp.text}")
+                        except Exception as e:
+                            st.error(f"Figma API 오류: {str(e)}")
+                    if api_key and file_key and selected_page and not layers:
+                        st.warning("⚠️ 하위 요소 목록이 비어 있습니다. 페이지 구조를 확인하세요.")
+                        if layer_api_data:
+                            st.write("Figma API 응답:", layer_api_data)
+                    col_layer1, col_layer2 = st.columns([3, 2])
+                    with col_layer1:
+                        selected_layer = st.selectbox("하위 요소(프레임/컴포넌트 등)를 선택하세요", options=layers, key="figma_layer_select_step", index=layers.index(selected_layer) if selected_layer in layers else 0) if layers else None
+                    with col_layer2:
+                        if file_key and selected_page:
+                            st.markdown("**하위요소(children) API URL**")
+                            st.code(f"https://api.figma.com/v1/files/{file_key}/nodes?ids={page_id_map[selected_page]}", language="text")
+                    # 3. 선택된 레이어의 텍스트 추출
+                    if selected_layer:
+                        col_btn, col_url = st.columns([2, 3])
+                        with col_btn:
+                            if st.button("✅ 이 요구사항으로 테스트 생성 시작", type="primary"):
+                                try:
+                                    with st.spinner(f"Figma 레이어 텍스트 추출 중... (fileKey: {file_key}, nodeId: {layer_id_map[selected_layer]})"):
+                                        headers = {"X-Figma-Token": api_key}
+                                        url = f"https://api.figma.com/v1/files/{file_key}/nodes?ids={layer_id_map[selected_layer]}"
+                                        resp = requests.get(url, headers=headers)
+                                        if resp.status_code == 200:
+                                            node = resp.json()['nodes'][layer_id_map[selected_layer]]['document']
+                                            descs = []
+                                            def extract_text(n):
+                                                if n['type'] == 'TEXT' and 'characters' in n:
+                                                    descs.append(n['characters'])
+                                                for c in n.get('children', []):
+                                                    extract_text(c)
+                                            extract_text(node)
+                                            desc = "\n".join(descs)
+                                            figma_task = {
+                                                'key': f'FIGMA-{layer_id_map[selected_layer]}',
+                                                'summary': f"{selected_page} - {selected_layer}",
+                                                'description': desc or f"Figma 레이어: {selected_layer}",
+                                                'acceptance_criteria': '',
+                                                'status': 'Figma',
+                                                'priority': 'Medium',
+                                                'issue_type': 'Figma 요구사항'
+                                            }
+                                            st.session_state.current_jira_task = figma_task
+                                            st.session_state.task_key = figma_task['key']
+                                            st.session_state.current_step = 2
+                                            st.success("✅ Figma 요구사항이 선택되었습니다!")
+                                            st.rerun()
+                                        else:
+                                            st.error(f"Figma 노드 조회 실패: {resp.status_code} - {resp.text}")
+                                except Exception as e:
+                                    st.error(f"Figma 레이어 텍스트 추출 오류: {str(e)}")
+                        with col_url:
+                            if file_key and selected_layer:
+                                st.markdown("**텍스트 추출 API URL**")
+                                st.code(f"https://api.figma.com/v1/files/{file_key}/nodes?ids={layer_id_map[selected_layer]}", language="text")
             else:  # 직접 입력
                 st.markdown("### ✏️ 직접 태스크 정보 입력")
                 
