@@ -18,6 +18,9 @@
     "default_project_id": 1,
     "default_section_id": 1
   },
+  "figma": {
+    "api_key": "your-figma-api-key",
+  },
   "app": {
     "default_test_count": 5,
     "auto_connect": true,
